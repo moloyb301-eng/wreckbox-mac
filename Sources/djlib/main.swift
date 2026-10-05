@@ -3,7 +3,7 @@ import Foundation
 let args = Array(CommandLine.arguments.dropFirst())
 let usage = """
 usage:
-  djlib                                                   open the DJ Library app
+  djlib                                                   open the WreckBox app
   djlib spotify [--client-id ID] [--include-generated]   import your Spotify playlists + Liked Songs
   djlib library                                           build the master catalog from the Spotify export
   djlib bpm --playlists "A,B" [--min 120 --max 145]       BPM list (ascending) for the given playlists
@@ -29,6 +29,7 @@ do {
     case "inventory": try await runInventory(paths: Array(args.dropFirst()))
     case "snapshot": await Snapshot.run(args: Array(args.dropFirst()))
     case "layout-check": await LayoutCheck.run(args: Array(args.dropFirst()))
+    case "make-icon": await IconMaker.run(args: Array(args.dropFirst()))
     default: print(usage)
     }
 } catch {

@@ -28,7 +28,7 @@ struct DJApp: App {
     }
 
     var body: some Scene {
-        WindowGroup("DJ Library") {
+        WindowGroup("WreckBox") {
             ContentView()
                 .environmentObject(store)
                 .environmentObject(browser)
@@ -158,9 +158,8 @@ struct Sidebar: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                Image(systemName: "sun.max.fill")   // placeholder until the logo arrives
-                    .font(.system(size: 18, weight: .semibold)).foregroundStyle(Theme.smart)
-                Text("DJ LIBRARY").font(Theme.dot(16)).tracking(2)
+                WreckBoxIcon(size: 40).frame(width: 34, height: 34)   // same artwork as the app icon
+                Text("WRECKBOX").font(Theme.dot(17)).tracking(2)
             }
             .padding(.horizontal, 18).padding(.top, 40).padding(.bottom, 18)
 
