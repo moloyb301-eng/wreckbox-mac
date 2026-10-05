@@ -30,12 +30,13 @@ struct Chip: View {
         Button(action: action) {
             HStack(spacing: 6) {
                 if selected { Circle().fill(Theme.lilac).frame(width: 6, height: 6) }
-                Text(label).font(Theme.ui(12.5, .semibold))
+                Text(label).font(Theme.ui(12.5, .semibold)).lineLimit(1)
                 if let count {
                     Text("\(count)").font(Theme.dot(11)).opacity(0.6)
                 }
             }
             .padding(.horizontal, 12).padding(.vertical, 6.5)
+            .fixedSize()
             .foregroundStyle(selected ? Color.black : smart ? Theme.text : Theme.text2)
             .background {
                 if selected { Capsule().fill(.white) }
@@ -247,7 +248,7 @@ struct StatTile: View {
             if let detail { Text(detail).font(Theme.ui(12)).foregroundStyle(Theme.text2) }
         }
         .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .modifier(TileBackground(smart: smart))
     }
 }

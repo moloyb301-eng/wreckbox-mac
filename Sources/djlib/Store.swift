@@ -26,6 +26,19 @@ struct AppState: Codable {
     var log: [LogEntry] = []
     var genreOverrides: [String: String] = [:]   // track id → genre you set by hand
     var scanFolders: [String] = ["~/Music/DJ Library/Tracks", "~/Music/rekordbox", "~/Music/Music", "~/Documents/06 Music & DJ", "~/Downloads", "~/Desktop"]
+
+    init() {}
+
+    /// Tolerates state.json files written before a field existed (missing keys keep their defaults),
+    /// so an older file never fails to load and then gets overwritten with an empty state.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = AppState()
+        tracks = try c.decodeIfPresent([String: TrackState].self, forKey: .tracks) ?? d.tracks
+        log = try c.decodeIfPresent([LogEntry].self, forKey: .log) ?? d.log
+        genreOverrides = try c.decodeIfPresent([String: String].self, forKey: .genreOverrides) ?? d.genreOverrides
+        scanFolders = try c.decodeIfPresent([String].self, forKey: .scanFolders) ?? d.scanFolders
+    }
 }
 
 enum SidebarItem: Hashable {
@@ -65,7 +78,15 @@ struct Row: Identifiable {
         let unsure = file?.bpm != nil ? file!.bpmAmbiguous : bpm?.ambiguous == true
         return String(format: "%.0f", b) + (unsure ? "?" : "")
     }
-    var bpmSource: String { file?.bpm != nil ? "full-track analysis" : bpm.map { "\($0.source) (30 s preview)" } ?? "" }
+    var bpmSource: String {
+        if file?.bpm != nil { return "from full-track analysis" }
+        switch bpm?.source {
+        case "deezer": return "from Deezer's catalogue"
+        case "estimated": return "estimated from a 30-second preview"
+        case let s?: return s
+        case nil: return ""
+        }
+    }
     var camelot: String { file?.camelot ?? "" }
     var camelotSort: Int { camelotOrder(file?.camelot) }
     var keyUnsure: Bool { file?.keyUnsure ?? false }
@@ -85,6 +106,8 @@ final class LibraryStore: ObservableObject {
     @Published var analysis: [String: FileAnalysis] = [:]   // keyed by file path
     @Published var genres: [String: GenreInfo] = [:]
     @Published var sidebar: SidebarItem? = .home
+    /// The track shown in the inspector (last clicked).
+    @Published var focus: String?
     @Published var busy: String?
     @Published var loadError: String?
     /// The track the user is currently hunting for on SoundCloud; the next download is attached to it.
@@ -105,13 +128,27 @@ final class LibraryStore: ObservableObject {
         } catch {
             loadError = "Couldn't read library.json – run `djlib spotify` then `djlib library`. (\(error.localizedDescription))"
         }
-        if let d = try? Data(contentsOf: Self.stateFile), let s = try? dec.decode(AppState.self, from: d) { state = s }
+        if let d = try? Data(contentsOf: Self.stateFile) {
+            do {
+                state = try dec.decode(AppState.self, from: d)
+                stateUnreadable = false
+            } catch {
+                // Never overwrite a state file we couldn't read: keep a copy and block saves until it's fixed.
+                stateUnreadable = true
+                try? d.write(to: libraryRoot.appendingPathComponent("state.unreadable.json"))
+                loadError = "Couldn't read state.json (a copy is in state.unreadable.json). Changes won't be saved. \(error.localizedDescription)"
+            }
+        }
         analysis = Analyzer.loadCache()
         genres = GenreTool.load()
         bpm = (try? JSONDecoder().decode([String: BPMResult].self, from: Data(contentsOf: BPMTool.cacheFile))) ?? [:]
     }
 
+    /// Set when state.json exists but couldn't be decoded; saving would destroy it.
+    private var stateUnreadable = false
+
     func save() {
+        guard !stateUnreadable else { return }
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         enc.dateEncodingStrategy = .iso8601

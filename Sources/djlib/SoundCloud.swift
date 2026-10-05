@@ -273,59 +273,83 @@ struct SoundCloudView: View {
     @State private var address = ""
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 14) {
+            PageHeader(eyebrow: "Tools", title: "SoundCloud", subtitle: "Downloads land in your crate automatically") { EmptyView() }
             if let id = store.pendingTrackID {
-                HStack {
+                HStack(spacing: 10) {
                     Image(systemName: "scope")
-                    Text("Looking for: ").bold() + Text(store.describe(id))
+                    Text("Looking for ").foregroundColor(Theme.text2) + Text(store.describe(id)).bold()
                     Spacer()
-                    Text("Use the track's ⋯ → Download file, or its free-download link").foregroundStyle(.secondary)
-                    Button("Clear") { store.pendingTrackID = nil }
+                    Text("Use the track's ⋯ → Download file, or its free-download link").font(Theme.ui(12)).foregroundStyle(Theme.text2)
+                    PillButton(label: "Clear") { store.pendingTrackID = nil }
                 }
-                .padding(8)
-                .background(.yellow.opacity(0.15))
+                .font(Theme.ui(13))
+                .padding(.horizontal, 16).padding(.vertical, 10)
+                .smartGlass(16)
             }
-            HStack {
-                Button { browser.webView.goBack() } label: { Image(systemName: "chevron.left") }.disabled(!browser.canGoBack)
-                Button { browser.webView.reload() } label: { Image(systemName: "arrow.clockwise") }
-                TextField("Search SoundCloud or paste a link", text: $address)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { browser.open(address) }
+            HStack(spacing: 8) {
+                RoundButton(icon: "chevron.left", help: "Back") { browser.webView.goBack() }.disabled(!browser.canGoBack)
+                RoundButton(icon: "arrow.clockwise", help: "Reload") { browser.webView.reload() }
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(Theme.text3)
+                    TextField("Search SoundCloud or paste a link", text: $address)
+                        .textFieldStyle(.plain).font(Theme.ui(13))
+                        .onSubmit { browser.open(address) }
+                }
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .background(Capsule().fill(Theme.glassFill).overlay(Capsule().strokeBorder(Theme.hairline)))
             }
-            .padding(8)
             WebView(webView: browser.webView)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.Radius.tile, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: Theme.Radius.tile, style: .continuous).strokeBorder(Theme.hairline))
             if !browser.bulk.isEmpty {
-                Divider()
-                HStack {
-                    Text("Bulk download").bold()
-                    let done = browser.bulk.filter { !["queued", "searching…"].contains($0.status) }.count
-                    Text("\(done)/\(browser.bulk.count) checked · \(browser.bulk.filter { $0.status == "downloaded" }.count) downloaded").foregroundStyle(.secondary)
-                    Spacer()
-                    if browser.bulkRunning { Button("Stop") { browser.stopBulk() } } else { Button("Clear") { browser.bulk = [] } }
-                }
-                .padding(.horizontal, 8).padding(.top, 6)
-                Table(browser.bulk) {
-                    TableColumn("Track", value: \.track)
-                    TableColumn("Result", value: \.status)
-                    TableColumn("Link") { r in
-                        if let l = r.link, let u = URL(string: l) { Link(l.replacingOccurrences(of: "https://", with: ""), destination: u).lineLimit(1) }
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        DotLabel("Bulk download", color: Theme.text)
+                        let done = browser.bulk.filter { !["queued", "searching…"].contains($0.status) }.count
+                        Text("\(done)/\(browser.bulk.count) checked · \(browser.bulk.filter { $0.status == "downloaded" }.count) downloaded")
+                            .font(Theme.ui(12)).foregroundStyle(Theme.text2)
+                        Spacer()
+                        if browser.bulkRunning { PillButton(label: "Stop", icon: "stop.fill") { browser.stopBulk() } }
+                        else { PillButton(label: "Clear") { browser.bulk = [] } }
                     }
+                    Scroller {
+                        LazyVStack(alignment: .leading, spacing: 4) {
+                            ForEach(browser.bulk) { r in
+                                HStack(spacing: 10) {
+                                    Text(r.track).font(Theme.ui(12.5, .medium)).lineLimit(1)
+                                    Spacer()
+                                    Text(r.status).font(Theme.ui(12)).foregroundStyle(Theme.text2)
+                                    if let l = r.link, let u = URL(string: l) {
+                                        Link(destination: u) { Image(systemName: "arrow.up.right.square") }.foregroundStyle(Theme.text2)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .frame(height: 140)
                 }
-                .frame(height: 180)
+                .padding(14)
+                .glass(Theme.Radius.tile)
             }
             if !browser.downloads.isEmpty {
-                Divider()
-                List(browser.downloads) { d in
-                    HStack {
-                        Image(systemName: d.state.hasPrefix("Added") ? "checkmark.circle.fill" : d.state.hasPrefix("failed") ? "xmark.octagon" : "arrow.down.circle")
-                        Text(d.name).lineLimit(1)
-                        Spacer()
-                        Text(d.state).foregroundStyle(.secondary).lineLimit(1)
+                VStack(alignment: .leading, spacing: 6) {
+                    DotLabel("Downloads")
+                    ForEach(browser.downloads.suffix(5)) { d in
+                        HStack(spacing: 10) {
+                            Image(systemName: d.state.hasPrefix("Added") ? "checkmark.circle.fill" : d.state.hasPrefix("failed") ? "xmark.octagon" : "arrow.down.circle")
+                                .foregroundStyle(d.state.hasPrefix("Added") ? Theme.lilac : d.state.hasPrefix("failed") ? Theme.peach : Theme.text2)
+                            Text(d.name).font(Theme.ui(12.5, .medium)).lineLimit(1)
+                            Spacer()
+                            Text(d.state).font(Theme.ui(12)).foregroundStyle(Theme.text2).lineLimit(1)
+                        }
                     }
                 }
-                .frame(height: 120)
+                .padding(14)
+                .glass(Theme.Radius.tile)
             }
         }
+        .padding(.horizontal, 22).padding(.top, 34).padding(.bottom, 10)
         .onReceive(browser.$currentURL) { address = $0 }
     }
 }

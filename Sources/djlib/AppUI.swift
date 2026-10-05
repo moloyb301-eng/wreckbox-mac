@@ -7,6 +7,8 @@ struct DJApp: App {
 
     init() {
         NSApplication.shared.setActivationPolicy(.regular)
+        NSApplication.shared.appearance = NSAppearance(named: .darkAqua)
+        Theme.registerFonts()
         DispatchQueue.main.async { NSApp.activate(ignoringOtherApps: true) }
     }
 
@@ -15,191 +17,694 @@ struct DJApp: App {
             ContentView()
                 .environmentObject(store)
                 .environmentObject(browser)
-                .onAppear { browser.store = store; store.startInboxWatcher() }
-                .frame(minWidth: 1000, minHeight: 620)
+                .onAppear { browser.store = store; store.startInboxWatcher(); store.refreshSoulseek() }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                    if store.soulseek.running { store.stopSoulseek() }
+                }
+                .frame(minWidth: 1180, minHeight: 720)
+                .preferredColorScheme(.dark)
         }
+        .windowStyle(.hiddenTitleBar)
     }
 }
+
+// MARK: - Window layout: sidebar | main | inspector
 
 struct ContentView: View {
     @EnvironmentObject var store: LibraryStore
 
     var body: some View {
-        NavigationSplitView {
-            List(selection: $store.sidebar) {
-                Section("Library") {
-                    Label("All tracks", systemImage: "music.note.list").badge(store.library?.tracks.count ?? 0).tag(SidebarItem.all)
-                    Label("Downloaded", systemImage: "checkmark.circle").badge(store.count(.downloaded)).tag(SidebarItem.downloaded)
-                    Label("Missing", systemImage: "circle.dashed").badge(store.count(.missing)).tag(SidebarItem.missing)
-                    Label("Ignored", systemImage: "nosign").badge(store.count(.ignored)).tag(SidebarItem.ignored)
-                    Label("Files on this Mac", systemImage: "internaldrive").badge(store.analysis.count).tag(SidebarItem.files)
-                }
-                Section("Playlists") {
-                    ForEach(store.library?.playlists ?? [], id: \.name) { p in
-                        Label(p.name, systemImage: p.collaborative ? "person.2" : "list.bullet").badge(p.trackIDs.count).tag(SidebarItem.playlist(p.name))
+        let focused = store.focus.flatMap { store.row($0) }
+        ZStack {
+            AmbientBackground(row: focused)
+            HStack(spacing: 0) {
+                Sidebar().frame(width: 252)
+                Group {
+                    if let err = store.loadError {
+                        EmptyState(icon: "exclamationmark.triangle", text: err)
+                    } else {
+                        switch store.sidebar {
+                        case .home, nil: HomeView()
+                        case .soundcloud: SoundCloudView()
+                        case .soulseek: SoulseekView()
+                        case .log: LogView()
+                        case .files: FilesView()
+                        default: TrackListView(item: store.sidebar)
+                        }
                     }
                 }
-                Section("Genres") {
-                    ForEach(store.genreCounts, id: \.0) { g, n in
-                        Label(g, systemImage: "tag").badge(n).tag(SidebarItem.genre(g))
-                    }
-                }
-                Section("Tools") {
-                    Label("SoundCloud", systemImage: "cloud").tag(SidebarItem.soundcloud)
-                    Label("Activity log", systemImage: "clock.arrow.circlepath").tag(SidebarItem.log)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if let r = focused, showsInspector {
+                    Inspector(row: r).frame(width: 340).transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
-            .navigationSplitViewColumnWidth(min: 200, ideal: 240)
-        } detail: {
-            if let err = store.loadError {
-                ContentUnavailable(text: err)
-            } else {
-                switch store.sidebar {
-                case .soundcloud: SoundCloudView()
-                case .log: LogView()
-                case .files: FilesTable()
-                default: TrackTable(item: store.sidebar)
-                }
-            }
+            .animation(.spring(response: 0.35, dampingFraction: 0.9), value: store.focus)
         }
-        .toolbar {
-            if let b = store.busy { ProgressView().controlSize(.small); Text(b).foregroundStyle(.secondary) }
-            Button { Task { await store.rescan() } } label: { Label("Rescan folders", systemImage: "arrow.triangle.2.circlepath") }
-                .disabled(store.busy != nil)
-                .help("Read tags in your music folders and mark matching tracks as downloaded")
-            Button { store.reload() } label: { Label("Reload", systemImage: "arrow.clockwise") }
-                .help("Reload library.json and the BPM cache")
+        .foregroundStyle(Theme.text)
+        .font(Theme.ui(13))
+    }
+
+    private var showsInspector: Bool {
+        switch store.sidebar {
+        case .soundcloud, .soulseek, .log: return false
+        default: return true
         }
     }
 }
 
-struct ContentUnavailable: View {
+struct EmptyState: View {
+    let icon: String
     let text: String
-    var body: some View { Text(text).foregroundStyle(.secondary).padding().frame(maxWidth: .infinity, maxHeight: .infinity) }
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: icon).font(.system(size: 28)).foregroundStyle(Theme.text3)
+            Text(text).font(Theme.ui(14)).foregroundStyle(Theme.text2).multilineTextAlignment(.center).frame(maxWidth: 420)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
 }
 
-struct TrackTable: View {
+/// Page title + subtitle with actions on the right.
+struct PageHeader<Trailing: View>: View {
+    let eyebrow: String
+    let title: String
+    var subtitle: String = ""
+    @ViewBuilder var trailing: Trailing
+
+    var body: some View {
+        HStack(alignment: .bottom) {
+            VStack(alignment: .leading, spacing: 6) {
+                DotLabel(eyebrow)
+                Text(title).font(Theme.ui(34, .medium)).tracking(-0.4).lineLimit(1)
+                if !subtitle.isEmpty { Text(subtitle).font(Theme.ui(13)).foregroundStyle(Theme.text2) }
+            }
+            Spacer(minLength: 16)
+            trailing
+        }
+    }
+}
+
+/// Rescan / reload actions plus the busy indicator, shared by list pages.
+struct LibraryActions: View {
+    @EnvironmentObject var store: LibraryStore
+    var body: some View {
+        HStack(spacing: 8) {
+            if let b = store.busy {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(b).font(Theme.ui(12)).foregroundStyle(Theme.text2).lineLimit(1)
+                }
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .background(Capsule().fill(Theme.glassFill))
+            }
+            PillButton(label: "Rescan & analyse", icon: "waveform.badge.magnifyingglass") { Task { await store.rescan() } }
+                .disabled(store.busy != nil)
+                .help("Read your music folders, relink moved files and analyse BPM / key / energy with Essentia")
+            RoundButton(icon: "arrow.clockwise", help: "Reload library.json") { store.reload() }
+        }
+    }
+}
+
+// MARK: - Sidebar
+
+struct Sidebar: View {
+    @EnvironmentObject var store: LibraryStore
+    @State private var showGenres = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "sun.max.fill")   // placeholder until the logo arrives
+                    .font(.system(size: 18, weight: .semibold)).foregroundStyle(Theme.smart)
+                Text("DJ LIBRARY").font(Theme.dot(16)).tracking(2)
+            }
+            .padding(.horizontal, 18).padding(.top, 40).padding(.bottom, 18)
+
+            Scroller(indicators: false) {
+                VStack(alignment: .leading, spacing: 2) {
+                    SideItem(item: .home, title: "Home", icon: "square.grid.2x2")
+                    section("Library")
+                    SideItem(item: .all, title: "All tracks", icon: "music.note.list", count: store.library?.tracks.count)
+                    SideItem(item: .downloaded, title: "In my crate", icon: "checkmark.circle", count: store.count(.downloaded))
+                    SideItem(item: .missing, title: "Missing", icon: "circle.dashed", count: store.count(.missing))
+                    SideItem(item: .ignored, title: "Ignored", icon: "nosign", count: store.count(.ignored))
+                    SideItem(item: .files, title: "Files on this Mac", icon: "internaldrive", count: store.analysis.count)
+
+                    section("Playlists")
+                    ForEach(store.library?.playlists ?? [], id: \.name) { p in
+                        SideItem(item: .playlist(p.name), title: p.name, icon: p.collaborative ? "person.2" : "music.note",
+                                 count: p.trackIDs.count,
+                                 progress: p.trackIDs.isEmpty ? nil : Double(store.downloadedCount(p)) / Double(p.trackIDs.count))
+                    }
+
+                    Button { withAnimation(.easeInOut(duration: 0.2)) { showGenres.toggle() } } label: {
+                        HStack {
+                            DotLabel("Genres")
+                            Image(systemName: showGenres ? "chevron.down" : "chevron.right").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.text3)
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).padding(.horizontal, 12).padding(.top, 18).padding(.bottom, 6)
+                    if showGenres {
+                        ForEach(store.genreCounts, id: \.0) { g, n in
+                            SideItem(item: .genre(g), title: g, icon: "tag", count: n)
+                        }
+                    }
+
+                    section("Tools")
+                    SideItem(item: .soulseek, title: "Soulseek sync", icon: "arrow.down.circle", live: store.soulseek.running)
+                    SideItem(item: .soundcloud, title: "SoundCloud", icon: "cloud")
+                    SideItem(item: .log, title: "Activity", icon: "clock.arrow.circlepath")
+                }
+                .padding(.horizontal, 8).padding(.bottom, 16)
+            }
+        }
+        .glass(Theme.Radius.card)
+        .padding(.leading, 10).padding(.vertical, 10)
+    }
+
+    private func section(_ s: String) -> some View {
+        DotLabel(s).padding(.horizontal, 12).padding(.top, 18).padding(.bottom, 6)
+    }
+}
+
+struct SideItem: View {
+    @EnvironmentObject var store: LibraryStore
+    let item: SidebarItem
+    let title: String
+    let icon: String
+    var count: Int?
+    var progress: Double?
+    var live = false
+    @State private var hovering = false
+
+    var body: some View {
+        let selected = store.sidebar == item
+        Button { store.sidebar = item } label: {
+            HStack(spacing: 10) {
+                Image(systemName: icon).font(.system(size: 13, weight: .medium)).frame(width: 18)
+                    .foregroundStyle(selected ? Theme.text : Theme.text3)
+                Text(title).font(Theme.ui(13.5, selected ? .semibold : .medium)).lineLimit(1)
+                    .foregroundStyle(selected ? Theme.text : Theme.text2)
+                Spacer(minLength: 4)
+                if live { Circle().fill(Theme.smart).frame(width: 7, height: 7) }
+                if let progress, progress > 0 {
+                    Circle().trim(from: 0, to: progress).stroke(Theme.lilac, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                        .rotationEffect(.degrees(-90)).frame(width: 10, height: 10)
+                        .background(Circle().stroke(Theme.hairline, lineWidth: 2))
+                }
+                if let count { Text("\(count)").font(Theme.dot(11)).foregroundStyle(Theme.text3) }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .background {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(selected ? Color.white.opacity(0.10) : hovering ? Theme.hover : .clear)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+    }
+}
+
+// MARK: - Track list
+
+enum SortKey: String { case none, title, artist, bpm, key, energy, genre, time, status, added }
+
+struct TrackListView: View {
     @EnvironmentObject var store: LibraryStore
     @EnvironmentObject var browser: SoundCloudBrowser
     let item: SidebarItem?
     @State private var search = ""
-    @State private var selection = Set<String>()
-    @State private var sortOrder: [KeyPathComparator<Row>] = []
     @State private var filter = MixFilter()
+    @State private var sort: SortKey = .none
+    @State private var ascending = true
+    @State private var selection = Set<String>()
+    @State private var anchor: String?
 
     var body: some View {
-        let rows = store.rows(item, search: search).filter { filter.allows(bpm: $0.bestBPM, camelot: $0.file?.camelot) }.sorted(using: sortOrder)
-        VStack(spacing: 0) {
-        FilterBar(filter: $filter)
-        Table(rows, selection: $selection, sortOrder: $sortOrder) {
-            TableColumn("", value: \.statusText) { r in
-                Image(systemName: r.status == .downloaded ? "checkmark.circle.fill" : r.status == .ignored ? "nosign" : "circle.dashed")
-                    .foregroundStyle(r.status == .downloaded ? .green : .secondary)
-                    .help(r.state?.localPath ?? r.statusText)
+        let rows = sorted(store.rows(item, search: search).filter { filter.allows(bpm: $0.bestBPM, camelot: $0.file?.camelot) })
+        VStack(alignment: .leading, spacing: 16) {
+            PageHeader(eyebrow: eyebrow, title: title,
+                       subtitle: "\(rows.count) tracks · \(rows.filter { $0.status == .downloaded }.count) in your crate") {
+                LibraryActions()
             }
-            .width(24)
-            TableColumn("BPM", value: \.bpmValue) { r in
-                Text(r.bpmText).monospacedDigit().foregroundStyle(r.file?.bpm != nil ? .primary : .secondary).help(r.bpmSource)
-            }.width(48)
-            TableColumn("Key", value: \.camelotSort) { r in Text(r.camelot).help(r.keyText) }.width(40)
-            TableColumn("Artist", value: \.artist)
-            TableColumn("Title", value: \.title)
-            TableColumn("Genre", value: \.genre) { r in
-                Text(r.genre + (r.genreUnsure && !r.genre.isEmpty ? " ?" : "")).foregroundStyle(r.genreUnsure ? .secondary : .primary).help(r.genreHelp)
-            }
-            TableColumn("Time", value: \.durationText).width(48)
-            TableColumn("Playlists", value: \.playlistsText)
-        }
-        .contextMenu(forSelectionType: String.self) { ids in
-            Button("Mark as downloaded") { store.setStatus(ids, .downloaded) }
-            Button("Mark as missing") { store.setStatus(ids, .missing) }
-            Button("Ignore") { store.setStatus(ids, .ignored) }
-            Menu("Set genre") {
-                ForEach(GenreTool.allGenres, id: \.self) { g in Button(g) { store.setGenre(ids, g) } }
-                Divider()
-                Button("Use detected genre") { store.setGenre(ids, nil) }
-            }
-            Button("Bulk download from SoundCloud (\(ids.count))") {
-                store.sidebar = .soundcloud
-                Task { await browser.bulkDownload(Array(ids)) }
-            }
-            .disabled(browser.bulkRunning)
-            if ids.count == 1, let id = ids.first {
-                if let c = store.rows(.all, search: "").first(where: { $0.id == id })?.file?.camelot {
-                    Button("Show tracks that mix with \(c)") { filter.key = c; filter.compatible = true }
-                }
-                Divider()
-                Button("Find on SoundCloud") { find(id) }
-                if let p = store.state.tracks[id]?.localPath {
-                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: p)]) }
+            FilterRow(search: $search, filter: $filter)
+            VStack(spacing: 0) {
+                ColumnHeader(sort: $sort, ascending: $ascending)
+                Divider().overlay(Theme.hairline)
+                if rows.isEmpty {
+                    EmptyState(icon: "music.note.list", text: search.isEmpty && !filter.isActive ? "Nothing here yet." : "No tracks match.")
+                } else {
+                    Scroller {
+                        LazyVStack(spacing: 2) {
+                            ForEach(rows) { r in
+                                TrackRowView(row: r, selected: selection.contains(r.id), focused: store.focus == r.id)
+                                    .onTapGesture { tap(r, in: rows) }
+                                    .contextMenu { TrackMenu(ids: selection.contains(r.id) ? selection : [r.id], filter: $filter) }
+                            }
+                        }
+                        .padding(6)
+                    }
                 }
             }
-        } primaryAction: { ids in
-            if let id = ids.first, store.state.tracks[id]?.status != .downloaded { find(id) }
+            .glass(Theme.Radius.card)
         }
+        .padding(.horizontal, 22).padding(.top, 34).padding(.bottom, 10)
+        .onChange(of: item) { _ in selection = []; anchor = nil }
+    }
+
+    private func tap(_ r: Row, in rows: [Row]) {
+        let flags = NSEvent.modifierFlags
+        if flags.contains(.command) {
+            if selection.contains(r.id) { selection.remove(r.id) } else { selection.insert(r.id) }
+        } else if flags.contains(.shift), let a = anchor, let i = rows.firstIndex(where: { $0.id == a }), let j = rows.firstIndex(where: { $0.id == r.id }) {
+            selection = Set(rows[min(i, j)...max(i, j)].map(\.id))
+        } else {
+            selection = [r.id]
+            anchor = r.id
         }
-        .searchable(text: $search, prompt: "Artist, title, album")
-        .navigationTitle(title)
-        .navigationSubtitle("\(rows.count) tracks · \(rows.filter { $0.status == .downloaded }.count) downloaded")
+        store.focus = r.id
+        if (NSApp.currentEvent?.clickCount ?? 1) >= 2 { primaryAction(r) }
+    }
+
+    private func primaryAction(_ r: Row) {
+        if let p = r.state?.localPath, r.status == .downloaded {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: p)])
+        } else {
+            findOnSoundCloud(store: store, browser: browser, id: r.id)
+        }
+    }
+
+    private func sorted(_ rows: [Row]) -> [Row] {
+        func by<T: Comparable>(_ k: (Row) -> T) -> [Row] { rows.sorted { ascending ? k($0) < k($1) : k($0) > k($1) } }
+        switch sort {
+        case .none: return rows
+        case .title: return by { $0.title.lowercased() }
+        case .artist: return by { $0.artist.lowercased() }
+        case .bpm: return by(\.bpmValue)
+        case .key: return by(\.camelotSort)
+        case .energy: return by(\.energyValue)
+        case .genre: return by { $0.genre }
+        case .time: return by { $0.track.durationMs ?? 0 }
+        case .status: return by { $0.status.rawValue }
+        case .added: return by(\.addedValue)
+        }
+    }
+
+    private var eyebrow: String {
+        switch item {
+        case .playlist: return "Playlist"
+        case .genre: return "Genre"
+        default: return "Library"
+        }
     }
 
     private var title: String {
         switch item {
         case .playlist(let n): return n
         case .missing: return "Missing"
-        case .downloaded: return "Downloaded"
+        case .downloaded: return "In my crate"
         case .ignored: return "Ignored"
         case .genre(let g): return g
         default: return "All tracks"
         }
     }
-
-    private func find(_ id: String) {
-        guard let t = store.track(id) else { return }
-        store.pendingTrackID = id
-        store.sidebar = .soundcloud
-        browser.search("\(t.artists.first ?? "") \(t.title)")
-    }
 }
 
-struct LogView: View {
-    @EnvironmentObject var store: LibraryStore
+@MainActor
+func findOnSoundCloud(store: LibraryStore, browser: SoundCloudBrowser, id: String) {
+    guard let t = store.track(id) else { return }
+    store.pendingTrackID = id
+    store.sidebar = .soundcloud
+    browser.search("\(t.artists.first ?? "") \(t.title)")
+}
+
+/// Column widths shared by the header and rows.
+enum Col {
+    static let art: CGFloat = 40, bpm: CGFloat = 60, key: CGFloat = 66, energy: CGFloat = 56, genre: CGFloat = 130, time: CGFloat = 46, status: CGFloat = 26
+}
+
+struct ColumnHeader: View {
+    @Binding var sort: SortKey
+    @Binding var ascending: Bool
 
     var body: some View {
-        Table(store.state.log.reversed()) {
-            TableColumn("When") { e in Text(e.date.formatted(date: .abbreviated, time: .shortened)) }.width(150)
-            TableColumn("Event", value: \.event).width(140)
-            TableColumn("Detail", value: \.detail)
+        HStack(spacing: 12) {
+            Color.clear.frame(width: Col.art, height: 1)
+            head("Title", .title).frame(maxWidth: .infinity, alignment: .leading)
+            head("BPM", .bpm).frame(width: Col.bpm, alignment: .leading)
+            head("Key", .key).frame(width: Col.key, alignment: .leading)
+            head("Energy", .energy).frame(width: Col.energy, alignment: .leading)
+            head("Genre", .genre).frame(width: Col.genre, alignment: .leading)
+            head("Time", .time).frame(width: Col.time, alignment: .trailing)
+            head("", .status).frame(width: Col.status)
         }
-        .navigationTitle("Activity log")
+        .padding(.horizontal, 16).padding(.top, 14).padding(.bottom, 10)
+    }
+
+    private func head(_ label: String, _ key: SortKey) -> some View {
+        Button {
+            if sort == key { if ascending { ascending = false } else { sort = .none; ascending = true } }
+            else { sort = key; ascending = true }
+        } label: {
+            HStack(spacing: 4) {
+                DotLabel(label, color: sort == key ? Theme.text : Theme.text3, size: 10)
+                if sort == key { Image(systemName: ascending ? "chevron.up" : "chevron.down").font(.system(size: 8, weight: .bold)) }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 
-struct FilterBar: View {
+struct TrackRowView: View {
+    let row: Row
+    let selected: Bool
+    let focused: Bool
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ArtworkView(row: row, size: Col.art)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(row.title).font(Theme.ui(13.5, .semibold)).lineLimit(1)
+                Text(row.artist).font(Theme.ui(12)).foregroundStyle(Theme.text2).lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            BPMReadout(bpm: row.bestBPM, unsure: row.bpmText.hasSuffix("?")).frame(width: Col.bpm, alignment: .leading)
+                .help(row.bpmSource)
+            KeyBadge(camelot: row.camelot, unsure: row.keyUnsure).frame(width: Col.key, alignment: .leading).help(row.keyText)
+            EnergyMeter(value: row.energy).frame(width: Col.energy, alignment: .leading)
+            Text(row.genre).font(Theme.ui(12)).foregroundStyle(row.genreUnsure ? Theme.text3 : Theme.text2).lineLimit(1)
+                .frame(width: Col.genre, alignment: .leading).help(row.genreHelp)
+            Text(row.durationText).font(Theme.dot(12)).foregroundStyle(Theme.text3).frame(width: Col.time, alignment: .trailing)
+            StatusDot(status: row.status).frame(width: Col.status).help(row.state?.localPath ?? row.statusText)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background {
+            RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous)
+                .fill(selected ? Color.white.opacity(0.10) : hovering ? Theme.hover : .clear)
+                .overlay {
+                    if focused { RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous).strokeBorder(Theme.smart.opacity(0.7), lineWidth: 1) }
+                }
+        }
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+    }
+}
+
+/// Right-click menu for one or more tracks.
+struct TrackMenu: View {
+    @EnvironmentObject var store: LibraryStore
+    @EnvironmentObject var browser: SoundCloudBrowser
+    let ids: Set<String>
     @Binding var filter: MixFilter
+
+    var body: some View {
+        Button("Mark as downloaded") { store.setStatus(ids, .downloaded) }
+        Button("Mark as missing") { store.setStatus(ids, .missing) }
+        Button("Ignore") { store.setStatus(ids, .ignored) }
+        Menu("Set genre") {
+            ForEach(GenreTool.allGenres, id: \.self) { g in Button(g) { store.setGenre(ids, g) } }
+            Divider()
+            Button("Use detected genre") { store.setGenre(ids, nil) }
+        }
+        Button("Bulk download from SoundCloud (\(ids.count))") {
+            store.sidebar = .soundcloud
+            Task { await browser.bulkDownload(Array(ids)) }
+        }
+        .disabled(browser.bulkRunning)
+        if ids.count == 1, let id = ids.first, let r = store.row(id) {
+            if !r.camelot.isEmpty {
+                Button("Show tracks that mix with \(r.camelot)") { filter.key = r.camelot; filter.compatible = true }
+            }
+            Divider()
+            Button("Find on SoundCloud") { findOnSoundCloud(store: store, browser: browser, id: id) }
+            if let p = r.state?.localPath {
+                Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: p)]) }
+            }
+        }
+    }
+}
+
+// MARK: - Filters
+
+struct FilterRow: View {
+    @Binding var search: String
+    @Binding var filter: MixFilter
+    var placeholder = "Search artist, title, album"
     static let keys = (1...12).flatMap { ["\($0)A", "\($0)B"] }
+    static let presets: [(String, String, String)] = [("< 100", "", "99"), ("100–120", "100", "120"), ("120–130", "120", "130"),
+                                                      ("130–145", "130", "145"), ("145+", "145", "")]
 
     var body: some View {
         HStack(spacing: 8) {
-            Text("BPM").foregroundStyle(.secondary)
-            TextField("min", text: $filter.minBPM).frame(width: 50)
-            Text("–").foregroundStyle(.secondary)
-            TextField("max", text: $filter.maxBPM).frame(width: 50)
-            Divider().frame(height: 16)
-            Picker("Key", selection: $filter.key) {
-                Text("Any").tag("")
-                ForEach(Self.keys, id: \.self) { Text($0).tag($0) }
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(Theme.text3)
+                TextField(placeholder, text: $search).textFieldStyle(.plain).font(Theme.ui(13))
+                if !search.isEmpty {
+                    Button { search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.text3) }.buttonStyle(.plain)
+                }
             }
-            .frame(width: 120)
-            Toggle("+ compatible", isOn: $filter.compatible).disabled(filter.key.isEmpty)
-                .help("Include keys one step around the Camelot wheel and the relative major/minor")
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .frame(minWidth: 150, idealWidth: 240, maxWidth: 260)
+            .background(Capsule().fill(Theme.glassFill).overlay(Capsule().strokeBorder(Theme.hairline)))
+
+            DotLabel("BPM", size: 10).padding(.leading, 6)
+            ForEach(Self.presets, id: \.0) { label, lo, hi in
+                Chip(label: label, selected: filter.minBPM == lo && filter.maxBPM == hi) {
+                    if filter.minBPM == lo && filter.maxBPM == hi { filter.minBPM = ""; filter.maxBPM = "" }
+                    else { filter.minBPM = lo; filter.maxBPM = hi }
+                }
+            }
+            HStack(spacing: 4) {
+                TextField("min", text: $filter.minBPM).frame(width: 34)
+                Text("–").foregroundStyle(Theme.text3)
+                TextField("max", text: $filter.maxBPM).frame(width: 34)
+            }
+            .textFieldStyle(.plain).font(Theme.dot(12)).multilineTextAlignment(.center)
+            .padding(.horizontal, 10).padding(.vertical, 6.5)
+            .background(Capsule().fill(Theme.glassFill).overlay(Capsule().strokeBorder(Theme.hairline)))
+
+            Menu {
+                Button("Any key") { filter.key = "" }
+                Divider()
+                ForEach(Self.keys, id: \.self) { k in Button(k) { filter.key = k } }
+            } label: {
+                HStack(spacing: 6) {
+                    if filter.key.isEmpty { Text("Any key").font(Theme.ui(12.5, .semibold)) }
+                    else { KeyBadge(camelot: filter.key) }
+                    Image(systemName: "chevron.down").font(.system(size: 9, weight: .bold))
+                }
+                .foregroundStyle(Theme.text2)
+                .padding(.horizontal, 12).padding(.vertical, filter.key.isEmpty ? 6.5 : 3)
+                .background(Capsule().fill(Theme.glassFill).overlay(Capsule().strokeBorder(Theme.hairline)))
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+
+            if !filter.key.isEmpty {
+                Chip(label: "+ compatible keys", selected: false, smart: filter.compatible) { filter.compatible.toggle() }
+                    .help("Include keys one step around the Camelot wheel and the relative major/minor")
+            }
             Spacer()
-            if filter.isActive { Button("Clear") { filter = MixFilter() } }
+            if filter.isActive {
+                Button("Clear") { filter = MixFilter() }.buttonStyle(.plain).font(Theme.ui(12.5, .semibold)).foregroundStyle(Theme.text2)
+            }
         }
-        .textFieldStyle(.roundedBorder)
-        .padding(.horizontal, 10).padding(.vertical, 6)
     }
 }
+
+// MARK: - Inspector
+
+struct Inspector: View {
+    @EnvironmentObject var store: LibraryStore
+    @EnvironmentObject var browser: SoundCloudBrowser
+    let row: Row
+
+    var body: some View {
+        Scroller(indicators: false) {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack {
+                    DotLabel(row.status == .downloaded ? "In your crate" : row.status == .ignored ? "Ignored" : "Missing")
+                    Spacer()
+                    RoundButton(icon: "xmark", help: "Close") { store.focus = nil }
+                }
+                ArtworkView(row: row, size: 300, radius: 20)
+                    .shadow(color: .black.opacity(0.5), radius: 24, y: 14)
+                    .frame(maxWidth: .infinity)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(row.title).font(Theme.ui(22, .semibold)).lineLimit(3)
+                    Text(row.artist).font(Theme.ui(15)).foregroundStyle(Theme.text2)
+                    Text([row.track.album, row.track.year].compactMap { $0 }.joined(separator: " · "))
+                        .font(Theme.ui(12)).foregroundStyle(Theme.text3).lineLimit(2)
+                }
+
+                HStack(spacing: 8) {
+                    readout("BPM") {
+                        BPMReadout(bpm: row.bestBPM, unsure: row.bpmText.hasSuffix("?"), size: 28)
+                        if let alt = row.file?.bpmAlternate { Text("or \(Int(alt.rounded()))").font(Theme.dot(11)).foregroundStyle(Theme.text3) }
+                    }
+                    readout("Key") {
+                        KeyBadge(camelot: row.camelot, unsure: row.keyUnsure, large: true)
+                        Text(row.keyText.isEmpty ? " " : row.keyText).font(Theme.ui(11)).foregroundStyle(Theme.text3)
+                    }
+                    readout("Energy") {
+                        EnergyMeter(value: row.energy, height: 22)
+                        Text(row.energy.map { "\(Int($0 * 100))%" } ?? "–").font(Theme.dot(11)).foregroundStyle(Theme.text3)
+                    }
+                }
+                Text(analysisNote).font(Theme.ui(11.5)).foregroundStyle(Theme.text3).fixedSize(horizontal: false, vertical: true)
+
+                if !row.genre.isEmpty || !row.track.playlists.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        DotLabel("Genre & playlists")
+                        FlowChips(items: ([row.genre].filter { !$0.isEmpty }) + row.track.playlists)
+                    }
+                }
+
+                MixesWithCard(row: row)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    if row.status == .downloaded, let p = row.state?.localPath {
+                        HStack(spacing: 8) {
+                            PillButton(label: "Show in Finder", icon: "folder", style: .primary) {
+                                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: p)])
+                            }
+                            PillButton(label: "Open", icon: "play.fill") { NSWorkspace.shared.open(URL(fileURLWithPath: p)) }
+                        }
+                        Text(p.replacingOccurrences(of: home.path, with: "~")).font(Theme.ui(11)).foregroundStyle(Theme.text3).lineLimit(3)
+                    } else {
+                        HStack(spacing: 8) {
+                            PillButton(label: "Find on SoundCloud", icon: "cloud", style: .primary) {
+                                findOnSoundCloud(store: store, browser: browser, id: row.id)
+                            }
+                            if row.status == .missing {
+                                PillButton(label: "Ignore", icon: "nosign") { store.setStatus([row.id], .ignored) }
+                            } else {
+                                PillButton(label: "Un-ignore", icon: "arrow.uturn.left") { store.setStatus([row.id], .missing) }
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(18)
+        }
+        .glass(Theme.Radius.card)
+        .padding(.vertical, 10).padding(.trailing, 10)
+    }
+
+    private var analysisNote: String {
+        guard let f = row.file else {
+            if row.status == .downloaded {
+                return "File not analysed yet — click Rescan & analyse (it also finds files you've moved)."
+            }
+            return row.bestBPM == nil ? "Not on this Mac yet — no analysis." : "Not on this Mac yet — BPM \(row.bpmSource)."
+        }
+        if f.engine == "essentia" {
+            var parts = ["Full-track analysis (Essentia)"]
+            if let c = f.bpmConfidence { parts.append("tempo confidence \(Int(c * 100))%") }
+            if let a = f.keyAgreement { parts.append("key \(a)/3 methods agree") }
+            if let l = f.loudnessLUFS { parts.append(String(format: "%.1f LUFS", l)) }
+            return parts.joined(separator: " · ")
+        }
+        return "Built-in analysis — run Rescan & analyse for Essentia results."
+    }
+
+    private func readout<C: View>(_ label: String, @ViewBuilder _ content: () -> C) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            DotLabel(label, size: 10)
+            content()
+        }
+        .frame(maxWidth: .infinity, minHeight: 78, alignment: .topLeading)
+        .padding(12)
+        .glass(16, shadow: false)
+    }
+}
+
+/// Small wrapping chips.
+struct FlowChips: View {
+    let items: [String]
+    var body: some View {
+        FlowLayout(spacing: 6) {
+            ForEach(items, id: \.self) { s in
+                Text(s).font(Theme.ui(11.5, .medium)).foregroundStyle(Theme.text2)
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(Capsule().fill(Theme.glassFill).overlay(Capsule().strokeBorder(Theme.hairline)))
+            }
+        }
+    }
+}
+
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 6
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? 300
+        var x: CGFloat = 0, y: CGFloat = 0, lineH: CGFloat = 0
+        for s in subviews {
+            let sz = s.sizeThatFits(.unspecified)
+            if x + sz.width > width, x > 0 { x = 0; y += lineH + spacing; lineH = 0 }
+            x += sz.width + spacing; lineH = max(lineH, sz.height)
+        }
+        return CGSize(width: width, height: y + lineH)
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX, y = bounds.minY, lineH: CGFloat = 0
+        for s in subviews {
+            let sz = s.sizeThatFits(.unspecified)
+            if x + sz.width > bounds.maxX, x > bounds.minX { x = bounds.minX; y += lineH + spacing; lineH = 0 }
+            s.place(at: CGPoint(x: x, y: y), proposal: .unspecified)
+            x += sz.width + spacing; lineH = max(lineH, sz.height)
+        }
+    }
+}
+
+/// Smart card: tracks you have that mix with the selected one.
+struct MixesWithCard: View {
+    @EnvironmentObject var store: LibraryStore
+    let row: Row
+
+    var body: some View {
+        let mixes = store.mixesWith(row)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Image(systemName: "sparkles").font(.system(size: 12, weight: .semibold))
+                DotLabel("Mixes with", color: Theme.text)
+                Spacer()
+                if !row.camelot.isEmpty { Text("\(Analyzer.compatible(row.camelot).sorted().joined(separator: " "))").font(Theme.dot(10)).foregroundStyle(Theme.text2) }
+            }
+            if row.camelot.isEmpty || row.bestBPM == nil {
+                Text("Needs a key and BPM — available once the track is on this Mac and analysed.")
+                    .font(Theme.ui(12)).foregroundStyle(Theme.text2)
+            } else if mixes.isEmpty {
+                Text("Nothing in your library within ±6% tempo in a compatible key yet.").font(Theme.ui(12)).foregroundStyle(Theme.text2)
+            } else {
+                ForEach(mixes) { m in
+                    Button { store.focus = m.id } label: {
+                        HStack(spacing: 10) {
+                            ArtworkView(row: m, size: 30, radius: 6)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(m.title).font(Theme.ui(12.5, .semibold)).lineLimit(1)
+                                Text(m.artist).font(Theme.ui(11)).foregroundStyle(Theme.text2).lineLimit(1)
+                            }
+                            Spacer(minLength: 4)
+                            BPMReadout(bpm: m.bestBPM, size: 13)
+                            KeyBadge(camelot: m.camelot)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(14)
+        .smartGlass(18)
+    }
+}
+
+// MARK: - Files on this Mac
 
 struct FileRow: Identifiable {
     let a: FileAnalysis
@@ -208,7 +713,6 @@ struct FileRow: Identifiable {
     var name: String { (a.path as NSString).lastPathComponent }
     var folder: String { (a.path as NSString).deletingLastPathComponent.replacingOccurrences(of: home.path, with: "~") }
     var bpmValue: Double { a.bpm ?? -1 }
-    var bpmText: String { a.bpm.map { String(format: "%.0f", $0) + (a.bpmAmbiguous ? "?" : "") } ?? "" }
     var camelot: String { a.camelot ?? "" }
     var camelotSort: Int { camelotOrder(a.camelot) }
     var artist: String { a.artist ?? "" }
@@ -217,43 +721,103 @@ struct FileRow: Identifiable {
 }
 
 /// Every audio file found in the scan folders, matched to the Spotify library or not.
-struct FilesTable: View {
+struct FilesView: View {
     @EnvironmentObject var store: LibraryStore
     @State private var search = ""
     @State private var filter = MixFilter()
-    @State private var selection = Set<String>()
-    @State private var sortOrder: [KeyPathComparator<FileRow>] = [KeyPathComparator(\.bpmValue)]
+    @State private var selected: String?
+    @State private var showSamples = false
 
     var body: some View {
         let q = normalized(search)
-        let rows = store.analysis.values
-            .map { FileRow(a: $0, inLibrary: $0.libraryTrackID.map { store.describe($0) } ?? "") }
+        let all = store.analysis.values.map { FileRow(a: $0, inLibrary: $0.libraryTrackID.map { store.describe($0) } ?? "") }
+        let samples = all.filter { ($0.a.durationSec ?? 0) < 30 }.count
+        let rows = all
+            .filter { showSamples || ($0.a.durationSec ?? 0) >= 30 }
             .filter { q.isEmpty || normalized("\($0.artist) \($0.title) \($0.name)").contains(q) }
             .filter { filter.allows(bpm: $0.a.bpm, camelot: $0.a.camelot) }
-            .sorted(using: sortOrder)
-        VStack(spacing: 0) {
-            FilterBar(filter: $filter)
-            Table(rows, selection: $selection, sortOrder: $sortOrder) {
-                TableColumn("BPM", value: \.bpmValue) { r in Text(r.bpmText).monospacedDigit() }.width(48)
-                TableColumn("Key", value: \.camelotSort) { r in Text(r.camelot).help(r.a.key ?? "") }.width(40)
-                TableColumn("Artist", value: \.artist)
-                TableColumn("Title", value: \.title)
-                TableColumn("File", value: \.name)
-                TableColumn("Time", value: \.durationText).width(48)
-                TableColumn("Folder", value: \.folder)
-                TableColumn("In Spotify library", value: \.inLibrary)
+            .sorted { ($0.a.bpm ?? .infinity) < ($1.a.bpm ?? .infinity) }
+        VStack(alignment: .leading, spacing: 16) {
+            PageHeader(eyebrow: "Library", title: "Files on this Mac",
+                       subtitle: store.analysis.isEmpty ? "Click Rescan & analyse to read your music folders" : "\(rows.count) files · sorted by BPM") {
+                LibraryActions()
             }
-            .contextMenu(forSelectionType: String.self) { ids in
-                Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(ids.map { URL(fileURLWithPath: $0) }) }
-                if ids.count == 1, let c = ids.first.flatMap({ store.analysis[$0]?.camelot }) {
-                    Button("Show files that mix with \(c)") { filter.key = c; filter.compatible = true }
+            HStack(spacing: 8) {
+                FilterRow(search: $search, filter: $filter, placeholder: "Search artist, title, file name")
+                if samples > 0 { Chip(label: "Clips under 30 s", count: samples, selected: showSamples) { showSamples.toggle() } }
+            }
+            Scroller {
+                LazyVStack(spacing: 2) {
+                    ForEach(rows) { r in
+                        HStack(spacing: 12) {
+                            Image(systemName: r.a.libraryTrackID == nil ? "doc" : "link")
+                                .foregroundStyle(r.a.libraryTrackID == nil ? Theme.text3 : Theme.lilac).frame(width: 18)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(r.title.isEmpty ? r.name : r.artist.isEmpty ? r.title : "\(r.artist) – \(r.title)").font(Theme.ui(13.5, .semibold)).lineLimit(1)
+                                Text(r.folder + "/" + r.name).font(Theme.ui(11.5)).foregroundStyle(Theme.text3).lineLimit(1)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            BPMReadout(bpm: r.a.bpm, unsure: r.a.bpmAmbiguous).frame(width: Col.bpm, alignment: .leading)
+                            KeyBadge(camelot: r.camelot, unsure: r.a.keyUnsure).frame(width: Col.key, alignment: .leading)
+                            EnergyMeter(value: r.a.energy).frame(width: Col.energy, alignment: .leading)
+                            Text(r.durationText).font(Theme.dot(12)).foregroundStyle(Theme.text3).frame(width: Col.time, alignment: .trailing)
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(RoundedRectangle(cornerRadius: Theme.Radius.row).fill(selected == r.id ? Color.white.opacity(0.10) : .clear))
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            selected = r.id
+                            if let id = r.a.libraryTrackID { store.focus = id }
+                            if (NSApp.currentEvent?.clickCount ?? 1) >= 2 { NSWorkspace.shared.open(URL(fileURLWithPath: r.id)) }
+                        }
+                        .contextMenu {
+                            Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: r.id)]) }
+                            if !r.camelot.isEmpty { Button("Show files that mix with \(r.camelot)") { filter.key = r.camelot; filter.compatible = true } }
+                        }
+                    }
                 }
-            } primaryAction: { ids in
-                ids.first.map { NSWorkspace.shared.open(URL(fileURLWithPath: $0)) }
+                .padding(6)
             }
+            .glass(Theme.Radius.card)
         }
-        .searchable(text: $search, prompt: "Artist, title, file name")
-        .navigationTitle("Files on this Mac")
-        .navigationSubtitle(rows.isEmpty && store.analysis.isEmpty ? "Click Rescan folders to analyse your music" : "\(rows.count) files")
+        .padding(.horizontal, 22).padding(.top, 34).padding(.bottom, 10)
+    }
+}
+
+// MARK: - Activity log
+
+struct LogView: View {
+    @EnvironmentObject var store: LibraryStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            PageHeader(eyebrow: "Tools", title: "Activity", subtitle: "\(store.state.log.count) events") { EmptyView() }
+            Scroller {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    ForEach(store.state.log.reversed()) { e in
+                        HStack(alignment: .firstTextBaseline, spacing: 14) {
+                            Text(e.date.formatted(date: .abbreviated, time: .shortened)).font(Theme.dot(11)).foregroundStyle(Theme.text3)
+                                .frame(width: 150, alignment: .leading)
+                            Text(e.event).font(Theme.ui(11.5, .semibold)).foregroundStyle(color(e.event))
+                                .padding(.horizontal, 9).padding(.vertical, 3)
+                                .background(Capsule().fill(color(e.event).opacity(0.14)))
+                                .frame(width: 150, alignment: .leading)
+                            Text(e.detail).font(Theme.ui(12.5)).foregroundStyle(Theme.text2).lineLimit(2)
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 7)
+                    }
+                }
+                .padding(6)
+            }
+            .glass(Theme.Radius.card)
+        }
+        .padding(.horizontal, 22).padding(.top, 34).padding(.bottom, 10)
+    }
+
+    private func color(_ event: String) -> Color {
+        if event.contains("downloaded") || event == "found" { return Theme.lilac }
+        if event.contains("fail") || event.contains("gone") || event.contains("unmatched") { return Theme.peach }
+        if event == "soulseek" { return Theme.lightBlue }
+        return Theme.text2
     }
 }
