@@ -1,7 +1,13 @@
 import AppKit
 import SwiftUI
 
+/// Closing the window quits the app, so reopening it always starts the current build.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+}
+
 struct DJApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store = LibraryStore()
     @StateObject private var browser = SoundCloudBrowser()
 
