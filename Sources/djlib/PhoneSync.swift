@@ -296,6 +296,7 @@ struct PhoneSyncView: View {
             }
             .padding(22)
             .glass(Theme.Radius.card)
+            AccountPanel().frame(maxWidth: 640, alignment: .leading)
             Spacer()
         }
         .padding(.horizontal, 22).padding(.top, 34).padding(.bottom, 10)

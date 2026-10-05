@@ -7,6 +7,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Stop the Soulseek sync this app started, so it never keeps running orphaned after quitting.
     func applicationWillTerminate(_ notification: Notification) {
+        // Stop the tunnel so it doesn't outlive the app.
+        let tunnel = Process()
+        tunnel.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        tunnel.arguments = ["-f", RemoteAccess.binary.path]
+        try? tunnel.run()
         guard let p = LibraryStore.syncProcess, p.isRunning else { return }
         p.terminate()
         let deadline = Date().addingTimeInterval(3)
@@ -21,6 +26,7 @@ struct DJApp: App {
     @StateObject private var browser = SoundCloudBrowser()
     @StateObject private var phoneSync = PhoneSyncServer()
     @StateObject private var updater = Updater()
+    @StateObject private var remote = RemoteAccess()
 
     init() {
         NSApplication.shared.setActivationPolicy(.regular)
@@ -36,7 +42,8 @@ struct DJApp: App {
                 .environmentObject(browser)
                 .environmentObject(phoneSync)
                 .environmentObject(updater)
-                .onAppear { browser.store = store; phoneSync.store = store; store.startInboxWatcher(); store.refreshSoulseek(); updater.start() }
+                .environmentObject(remote)
+                .onAppear { browser.store = store; phoneSync.store = store; store.startInboxWatcher(); store.refreshSoulseek(); updater.start(); remote.server = phoneSync; remote.store = store; remote.resume() }
                 .frame(minWidth: 980, minHeight: 620)
                 .preferredColorScheme(.dark)
         }
