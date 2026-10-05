@@ -19,6 +19,7 @@ struct DJApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store = LibraryStore()
     @StateObject private var browser = SoundCloudBrowser()
+    @StateObject private var phoneSync = PhoneSyncServer()
 
     init() {
         NSApplication.shared.setActivationPolicy(.regular)
@@ -32,7 +33,8 @@ struct DJApp: App {
             ContentView()
                 .environmentObject(store)
                 .environmentObject(browser)
-                .onAppear { browser.store = store; store.startInboxWatcher(); store.refreshSoulseek() }
+                .environmentObject(phoneSync)
+                .onAppear { browser.store = store; phoneSync.store = store; store.startInboxWatcher(); store.refreshSoulseek() }
                 .frame(minWidth: 980, minHeight: 620)
                 .preferredColorScheme(.dark)
         }
@@ -63,6 +65,7 @@ struct ContentView: View {
                         case .soulseek: SoulseekView()
                         case .queue: QueueView()
                         case .results: SyncResultsView()
+                        case .phone: PhoneSyncView()
                         case .log: LogView()
                         case .files: FilesView()
                         default: TrackListView(item: store.sidebar)
@@ -90,7 +93,7 @@ struct ContentView: View {
 
     private var showsInspector: Bool {
         switch store.sidebar {
-        case .soundcloud, .soulseek, .log: return false
+        case .soundcloud, .soulseek, .log, .phone: return false
         default: return true
         }
     }
@@ -198,6 +201,7 @@ struct Sidebar: View {
                     section("Tools")
                     SideItem(item: .queue, title: "Download queue", icon: "list.number", count: store.priorities.isEmpty ? nil : store.priorities.count)
                     SideItem(item: .soulseek, title: "Soulseek sync", icon: "arrow.down.circle", live: store.soulseek.running)
+                    SideItem(item: .phone, title: "Sync to phone", icon: "iphone.radiowaves.left.and.right")
                     SideItem(item: .results, title: "Sync results", icon: "checklist",
                              count: store.soulseek.notFound + store.soulseek.failed == 0 ? nil : store.soulseek.notFound + store.soulseek.failed)
                     SideItem(item: .soundcloud, title: "SoundCloud", icon: "cloud")

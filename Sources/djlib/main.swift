@@ -30,6 +30,13 @@ do {
     case "snapshot": await Snapshot.run(args: Array(args.dropFirst()))
     case "layout-check": await LayoutCheck.run(args: Array(args.dropFirst()))
     case "make-icon": await IconMaker.run(args: Array(args.dropFirst()))
+    case "phone-serve":   // developer test: serve the crate to phones for N seconds (no window)
+        let store = await LibraryStore()
+        let server = PhoneSyncServer()
+        server.store = store
+        await server.start()
+        print(server.pairingURI)
+        try await Task.sleep(for: .seconds(Double(args.dropFirst().first ?? "60") ?? 60))
     case "tag-job":   // prints the tag job the app would write for a track (no file is changed)
         let store = await LibraryStore()
         let id = await args.dropFirst().first ?? (store.library?.tracks.first { store.state.tracks[$0.id]?.status == .downloaded }?.id ?? "")

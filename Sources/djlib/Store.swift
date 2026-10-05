@@ -48,7 +48,7 @@ struct AppState: Codable {
 }
 
 enum SidebarItem: Hashable {
-    case home, all, missing, downloaded, ignored, files, playlist(String), genre(String), log, soundcloud, soulseek, queue, results
+    case home, all, missing, downloaded, ignored, files, playlist(String), genre(String), log, soundcloud, soulseek, queue, results, phone
 }
 
 /// One track's entry in _soulseek/sync.json (written by slsk-sync).
