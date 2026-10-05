@@ -1,0 +1,370 @@
+import Foundation
+import SwiftUI
+
+// App state: which library tracks have a file on disk, where it lives, and a log of every change.
+// Persisted to ~/Music/DJ Library/state.json; library.json and the BPM cache are read-only inputs.
+
+enum TrackStatus: String, Codable { case missing, downloaded, ignored }
+
+struct TrackState: Codable {
+    var status: TrackStatus
+    var localPath: String?
+    var source: String?         // "scan", "soundcloud", "manual"
+    var updatedAt: Date
+}
+
+struct LogEntry: Codable, Identifiable {
+    var id = UUID()
+    var date: Date
+    var event: String
+    var trackID: String?
+    var detail: String
+}
+
+struct AppState: Codable {
+    var tracks: [String: TrackState] = [:]
+    var log: [LogEntry] = []
+    var genreOverrides: [String: String] = [:]   // track id → genre you set by hand
+    var scanFolders: [String] = ["~/Music/DJ Library/Tracks", "~/Music/rekordbox", "~/Music/Music", "~/Documents/06 Music & DJ", "~/Downloads", "~/Desktop"]
+}
+
+enum SidebarItem: Hashable {
+    case all, missing, downloaded, ignored, files, playlist(String), genre(String), log, soundcloud
+}
+
+struct Row: Identifiable {
+    let track: LibraryTrack
+    let state: TrackState?
+    let bpm: BPMResult?             // from the 30 s preview
+    let file: FileAnalysis?         // from the full local file (preferred)
+    let genreInfo: GenreInfo?
+    let genreOverride: String?
+    var genre: String { genreOverride ?? genreInfo?.genre ?? "" }
+    var genreHelp: String {
+        if genreOverride != nil { return "set by you" }
+        guard let g = genreInfo else { return "" }
+        return g.confidence + " — " + g.sources.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value.joined(separator: ", "))" }.joined(separator: "; ")
+    }
+    var genreUnsure: Bool { genreOverride == nil && genreInfo?.confidence != "verified" }
+    var id: String { track.id }
+    var status: TrackStatus { state?.status ?? .missing }
+    var statusText: String { status.rawValue }
+    var artist: String { track.artists.joined(separator: ", ") }
+    var title: String { track.title }
+    var bestBPM: Double? { file?.bpm ?? bpm?.bpm }
+    var bpmValue: Double { bestBPM ?? -1 }
+    var bpmText: String {
+        guard let b = bestBPM else { return "" }
+        let unsure = file?.bpm != nil ? file!.bpmAmbiguous : bpm?.ambiguous == true
+        return String(format: "%.0f", b) + (unsure ? "?" : "")
+    }
+    var bpmSource: String { file?.bpm != nil ? "full-track analysis" : bpm.map { "\($0.source) (30 s preview)" } ?? "" }
+    var camelot: String { file?.camelot ?? "" }
+    var camelotSort: Int { camelotOrder(file?.camelot) }
+    var keyText: String { file?.key ?? "" }
+    var playlistsText: String { track.playlists.joined(separator: ", ") }
+    var durationText: String { track.durationMs.map { String(format: "%d:%02d", $0 / 60000, $0 / 1000 % 60) } ?? "" }
+}
+
+@MainActor
+final class LibraryStore: ObservableObject {
+    @Published var library: Library?
+    @Published var state = AppState()
+    @Published var bpm: [String: BPMResult] = [:]
+    @Published var analysis: [String: FileAnalysis] = [:]   // keyed by file path
+    @Published var genres: [String: GenreInfo] = [:]
+    @Published var sidebar: SidebarItem? = .all
+    @Published var busy: String?
+    @Published var loadError: String?
+    /// The track the user is currently hunting for on SoundCloud; the next download is attached to it.
+    @Published var pendingTrackID: String?
+
+    nonisolated static let stateFile = libraryRoot.appendingPathComponent("state.json")
+    nonisolated static let tracksDir = libraryRoot.appendingPathComponent("Tracks")
+    nonisolated static let inboxDir = libraryRoot.appendingPathComponent("_inbox")
+
+    init() { reload() }
+
+    func reload() {
+        let dec = JSONDecoder()
+        dec.dateDecodingStrategy = .iso8601
+        do {
+            library = try dec.decode(Library.self, from: Data(contentsOf: libraryRoot.appendingPathComponent("library.json")))
+            loadError = nil
+        } catch {
+            loadError = "Couldn't read library.json – run `djlib spotify` then `djlib library`. (\(error.localizedDescription))"
+        }
+        if let d = try? Data(contentsOf: Self.stateFile), let s = try? dec.decode(AppState.self, from: d) { state = s }
+        analysis = Analyzer.loadCache()
+        genres = GenreTool.load()
+        bpm = (try? JSONDecoder().decode([String: BPMResult].self, from: Data(contentsOf: BPMTool.cacheFile))) ?? [:]
+    }
+
+    func save() {
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        enc.dateEncodingStrategy = .iso8601
+        try? enc.encode(state).write(to: Self.stateFile, options: .atomic)
+    }
+
+    func log(_ event: String, _ trackID: String? = nil, _ detail: String) {
+        state.log.append(LogEntry(date: Date(), event: event, trackID: trackID, detail: detail))
+    }
+
+    func track(_ id: String) -> LibraryTrack? { library?.tracks.first { $0.id == id } }
+
+    // MARK: Queries
+
+    func rows(_ item: SidebarItem?, search: String) -> [Row] {
+        guard let lib = library else { return [] }
+        var tracks = lib.tracks
+        if case .playlist(let name) = item, let p = lib.playlists.first(where: { $0.name == name }) {
+            let byID = Dictionary(lib.tracks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            tracks = p.trackIDs.compactMap { byID[$0] }
+        }
+        var rows = tracks.map { t -> Row in
+            let st = state.tracks[t.id]
+            return Row(track: t, state: st, bpm: bpm[t.id], file: st?.localPath.flatMap { analysis[$0] },
+                       genreInfo: genres[t.id], genreOverride: state.genreOverrides[t.id])
+        }
+        if case .genre(let g) = item { rows = rows.filter { $0.genre == g || (g == "Unknown" && $0.genre.isEmpty) } }
+        switch item {
+        case .missing: rows = rows.filter { $0.status == .missing }
+        case .downloaded: rows = rows.filter { $0.status == .downloaded }
+        case .ignored: rows = rows.filter { $0.status == .ignored }
+        default: break
+        }
+        let q = normalized(search)
+        if !q.isEmpty { rows = rows.filter { normalized("\($0.artist) \($0.title) \($0.track.album ?? "")").contains(q) } }
+        return rows
+    }
+
+    func count(_ status: TrackStatus) -> Int {
+        library?.tracks.filter { (state.tracks[$0.id]?.status ?? .missing) == status }.count ?? 0
+    }
+
+    // MARK: Actions
+
+    func setStatus(_ ids: Set<String>, _ status: TrackStatus) {
+        for id in ids {
+            let old = state.tracks[id]
+            state.tracks[id] = TrackState(status: status, localPath: status == .downloaded ? old?.localPath : nil, source: "manual", updatedAt: Date())
+            log("marked \(status.rawValue)", id, describe(id))
+        }
+        save()
+    }
+
+    func genre(of id: String) -> String { state.genreOverrides[id] ?? genres[id]?.genre ?? "Unknown" }
+
+    var genreCounts: [(String, Int)] {
+        var c: [String: Int] = [:]
+        library?.tracks.forEach { c[genre(of: $0.id), default: 0] += 1 }
+        return c.sorted { $0.value > $1.value }
+    }
+
+    func setGenre(_ ids: Set<String>, _ g: String?) {
+        for id in ids {
+            state.genreOverrides[id] = g
+            log(g == nil ? "genre reset" : "genre set", id, "\(describe(id)) → \(g ?? genres[id]?.genre ?? "Unknown")")
+        }
+        save()
+    }
+
+    func describe(_ id: String) -> String {
+        guard let t = track(id) else { return id }
+        return "\(t.artists.joined(separator: ", ")) – \(t.title)"
+    }
+
+    /// Reads tags from every audio file in the scan folders and links files to library tracks.
+    /// Never moves or edits files; only records where each track lives.
+    func rescan() async {
+        guard let lib = library else { return }
+        busy = "Scanning folders…"
+        let matcher = Matcher(tracks: lib.tracks)
+        var files: [URL] = []
+        for f in state.scanFolders { files += findAudioFiles(in: URL(fileURLWithPath: (f as NSString).expandingTildeInPath)) }
+
+        var found: [String: String] = [:]
+        var analysed = 0
+        for (i, url) in files.enumerated() {
+            busy = "Scanning & analysing \(i + 1)/\(files.count)…"
+            let rec = await readTrack(url)
+            let idx = matcher.match(rec)
+            if let idx, found[lib.tracks[idx].id] == nil { found[lib.tracks[idx].id] = url.path }
+            let trackID = idx.map { lib.tracks[$0].id }
+            if Analyzer.isFresh(analysis[url.path], rec) {
+                analysis[url.path]?.libraryTrackID = trackID
+            } else {
+                analysis[url.path] = await Task.detached(priority: .utility) { Analyzer.analyze(rec, libraryTrackID: trackID) }.value
+                analysed += 1
+                if analysed % 20 == 0 { Analyzer.saveCache(analysis) }
+            }
+        }
+        let seen = Set(files.map(\.path))
+        analysis = analysis.filter { seen.contains($0.key) || FileManager.default.fileExists(atPath: $0.key) }
+        Analyzer.saveCache(analysis)
+
+        var added = 0, removed = 0
+        for t in lib.tracks {
+            let cur = state.tracks[t.id]
+            if let path = found[t.id] {
+                if cur?.status != .downloaded || cur?.localPath != path {
+                    if cur?.status == .ignored { continue }
+                    state.tracks[t.id] = TrackState(status: .downloaded, localPath: path, source: cur?.source == "manual" ? "manual" : "scan", updatedAt: Date())
+                    log("found", t.id, "\(describe(t.id)) → \(path.replacingOccurrences(of: home.path, with: "~"))")
+                    added += 1
+                }
+            } else if cur?.status == .downloaded, let p = cur?.localPath, !FileManager.default.fileExists(atPath: p) {
+                state.tracks[t.id] = TrackState(status: .missing, localPath: nil, source: "scan", updatedAt: Date())
+                log("file gone", t.id, "\(describe(t.id)) – \(p) no longer exists")
+                removed += 1
+            }
+        }
+        log("rescan", nil, "\(files.count) audio files read, \(analysed) analysed, \(added) newly matched, \(removed) gone")
+        save()
+        busy = nil
+    }
+
+    /// Called when a download lands in _inbox: match it, move it into Tracks/, record it.
+    func importDownloaded(_ file: URL, source: String) async -> String {
+        guard let lib = library else { return "no library loaded" }
+        let rec = await readTrack(file)
+        let idx = Matcher(tracks: lib.tracks).match(rec) ?? pendingTrackID.flatMap { id in lib.tracks.firstIndex { $0.id == id } }
+        guard let i = idx else {
+            log("unmatched download", nil, "\(file.lastPathComponent) kept in _inbox – no matching library track")
+            save()
+            return "Saved to _inbox (no matching track): \(file.lastPathComponent)"
+        }
+        let t = lib.tracks[i]
+        var dest = Self.tracksDir.appendingPathComponent(t.fileName).appendingPathExtension(file.pathExtension.lowercased())
+        var n = 2
+        while FileManager.default.fileExists(atPath: dest.path) {
+            dest = Self.tracksDir.appendingPathComponent("\(t.fileName) (\(n))").appendingPathExtension(file.pathExtension.lowercased()); n += 1
+        }
+        do {
+            try FileManager.default.createDirectory(at: Self.tracksDir, withIntermediateDirectories: true)
+            try FileManager.default.moveItem(at: file, to: dest)
+        } catch {
+            log("import failed", t.id, "\(file.lastPathComponent): \(error.localizedDescription)")
+            save()
+            return "Import failed: \(error.localizedDescription)"
+        }
+        state.tracks[t.id] = TrackState(status: .downloaded, localPath: dest.path, source: source, updatedAt: Date())
+        let moved = await readTrack(dest)
+        analysis[dest.path] = await Task.detached(priority: .utility) { Analyzer.analyze(moved, libraryTrackID: t.id) }.value
+        Analyzer.saveCache(analysis)
+        log("downloaded", t.id, "\(describe(t.id)) via \(source) → Tracks/\(dest.lastPathComponent)")
+        if pendingTrackID == t.id { pendingTrackID = nil }
+        save()
+        return "Added \(describe(t.id))"
+    }
+
+    // MARK: Inbox watcher
+
+    /// Files already offered to importDownloaded this session (path + size), so unmatched ones aren't retried every tick.
+    private var inboxSeen: Set<String> = []
+    private var inboxWatcher: Task<Void, Never>?
+
+    /// Imports whatever lands in _inbox (e.g. from slsk-sync, which moves only finished files in).
+    func startInboxWatcher() {
+        guard inboxWatcher == nil else { return }
+        inboxWatcher = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.importInbox()
+                try? await Task.sleep(for: .seconds(15))
+            }
+        }
+    }
+
+    func importInbox() async {
+        guard library != nil, busy == nil else { return }
+        let files = (try? FileManager.default.contentsOfDirectory(at: Self.inboxDir, includingPropertiesForKeys: [.fileSizeKey],
+                                                                 options: [.skipsHiddenFiles])) ?? []
+        for f in files where audioExtensions.contains(f.pathExtension.lowercased()) {
+            let size = (try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            guard inboxSeen.insert("\(f.path)|\(size)").inserted else { continue }
+            _ = await importDownloaded(f, source: "soulseek")
+        }
+    }
+}
+
+// MARK: - Matching files to library tracks
+
+struct Matcher {
+    let tracks: [LibraryTrack]
+    private var byISRC: [String: Int] = [:]
+    private var byTitle: [String: [Int]] = [:]
+
+    init(tracks: [LibraryTrack]) {
+        self.tracks = tracks
+        for (i, t) in tracks.enumerated() {
+            if let isrc = t.isrc { byISRC[isrc] = i }
+            byTitle[Self.cleanTitle(t.title), default: []].append(i)
+        }
+    }
+
+    /// Strips noise that differs between Spotify titles and file tags/names, but keeps remix/edit names.
+    static func cleanTitle(_ s: String) -> String {
+        var t = s.lowercased()
+        for pattern in [#"[\(\[]\s*(feat|ft|with)\.?\s[^\)\]]*[\)\]]"#, #"\s(feat|ft)\.?\s.*$"#,
+                        #"[\(\[][^\)\]]*(official|visuali[sz]er|lyric|audio|video|free\s?d(ownload|l)|out now)[^\)\]]*[\)\]]"#,
+                        #"[\(\[]\s*original mix\s*[\)\]]"#, #"\s-\s(remaster(ed)?|original mix).*$"#] {
+            t = t.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+        }
+        return normalized(t)
+    }
+
+    func match(_ r: TrackRecord) -> Int? {
+        if let isrc = r.isrc, let i = byISRC[isrc] { return i }
+        var guesses: [(artist: String, title: String)] = []
+        if let a = r.artist, let t = r.title { guesses.append((a, t)) }
+        // "Artist - Title.mp3" (or the reverse, which shows up in rips and promo files)
+        let parts = (r.fileName as NSString).deletingPathExtension.components(separatedBy: " - ")
+        if parts.count >= 2 {
+            guesses.append((parts[0], parts.dropFirst().joined(separator: " - ")))
+            guesses.append((parts.last!, parts.dropLast().joined(separator: " - ")))
+        } else if let a = r.artist {
+            guesses.append((a, parts[0]))
+        }
+        for g in guesses {
+            let fileArtist = normalized(g.artist)
+            let cands = (byTitle[Self.cleanTitle(g.title)] ?? []).filter { i in
+                tracks[i].artists.contains { a in let n = normalized(a); return !n.isEmpty && (fileArtist.contains(n) || n.contains(fileArtist)) }
+            }
+            let best = cands.min { abs(dur($0, r)) < abs(dur($1, r)) }
+            if let b = best, r.durationSec == nil || tracks[b].durationMs == nil || abs(dur(b, r)) < 8 { return b }
+        }
+        return nil
+    }
+
+    private func dur(_ i: Int, _ r: TrackRecord) -> Double {
+        guard let a = tracks[i].durationMs, let b = r.durationSec else { return 0 }
+        return Double(a) / 1000 - b
+    }
+}
+
+/// Sort order around the Camelot wheel: 1A, 1B, 2A, 2B … 12B; unknown keys last.
+func camelotOrder(_ c: String?) -> Int {
+    guard let c, let n = Int(c.dropLast()) else { return 999 }
+    return n * 2 + (c.hasSuffix("B") ? 1 : 0)
+}
+
+/// Shared BPM-range / key filter used by both tables.
+struct MixFilter: Equatable {
+    var minBPM = ""
+    var maxBPM = ""
+    var key = ""            // Camelot code, "" = any
+    var compatible = true   // include harmonically compatible keys
+
+    var isActive: Bool { !minBPM.isEmpty || !maxBPM.isEmpty || !key.isEmpty }
+
+    func allows(bpm: Double?, camelot: String?) -> Bool {
+        if let lo = Double(minBPM) { guard let b = bpm, b >= lo else { return false } }
+        if let hi = Double(maxBPM) { guard let b = bpm, b <= hi else { return false } }
+        if !key.isEmpty {
+            guard let c = camelot else { return false }
+            return compatible ? Analyzer.compatible(key).contains(c) : c == key
+        }
+        return true
+    }
+}
