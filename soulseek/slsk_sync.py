@@ -43,6 +43,7 @@ WORK_DIR = LIBRARY_ROOT / "_soulseek"
 INCOMING = WORK_DIR / "incoming"          # aioslsk writes partial files here
 INBOX = LIBRARY_ROOT / "_inbox"           # finished files are handed to the app here
 SYNC_FILE = WORK_DIR / "sync.json"
+OVERRIDES_FILE = WORK_DIR / "overrides.json"   # written by the DJ Library app: retry requests + custom queries
 LOG_FILE = WORK_DIR / "sync.log"
 CONFIG_FILE = HERE / "config.toml"
 
@@ -113,13 +114,21 @@ def missing_tracks(cfg: dict, sync: dict) -> list[dict]:
     if library is None:
         raise SystemExit(f"Can't read {LIBRARY_ROOT / 'library.json'} — run `djlib spotify` and `djlib library` first.")
     app_state = load_json(LIBRARY_ROOT / "state.json", {}).get("tracks", {})
+    overrides = load_json(OVERRIDES_FILE, {})
     s = cfg["sync"]
-    out = []
+    out, retried = [], set()
     for t in library["tracks"]:
         if app_state.get(t["id"], {}).get("status") in ("downloaded", "ignored"):
             continue
         rec = sync.get(t["id"], {})
-        if rec.get("status") == "done" or in_inbox(t["fileName"]):
+        if in_inbox(t["fileName"]):
+            continue
+        # "Retry" in the app: a retry request newer than the last attempt makes the track due right away.
+        if (overrides.get(t["id"], {}).get("retryAt") or "") > (rec.get("last_try") or ""):
+            retried.add(t["id"])
+            out.append(t)
+            continue
+        if rec.get("status") == "done":
             continue
         if rec.get("status") in ("failed", "not_found"):
             if rec.get("attempts", 0) >= s["max_attempts"] or hours_since(rec.get("last_try")) < s["retry_after_hours"]:
@@ -134,6 +143,7 @@ def missing_tracks(cfg: dict, sync: dict) -> list[dict]:
         if queue.get("onlyPriority"):
             out = [t for t in out if t["id"] in rank]
         out.sort(key=lambda t: rank.get(t["id"], len(rank)))   # stable: unranked keep newest-first
+    out.sort(key=lambda t: t["id"] not in retried)               # explicit retries go first
     return out
 
 # ── Matching + ranking ───────────────────────────────────────────────────────
@@ -161,10 +171,12 @@ def clean_title(title: str) -> str:
 
 
 def search_queries(track: dict) -> list[str]:
+    custom = (load_json(OVERRIDES_FILE, {}).get(track["id"], {}).get("query") or "").strip()
     artist = norm(track["artists"][0]) if track["artists"] else ""
     title = norm(clean_title(track["title"]))
     bare = norm(re.sub(r"[\(\[].*?[\)\]]|\s-\s.*$", "", track["title"]))
-    qs = [f"{artist} {title}".strip()]
+    qs = [norm(custom)] if custom else []
+    qs.append(f"{artist} {title}".strip())
     if bare and bare != title:
         qs.append(f"{artist} {bare}".strip())
     return qs
@@ -222,7 +234,7 @@ def file_matches(track: dict, path: str, duration: int | None, tol: int) -> bool
     return True
 
 
-def rank(track: dict, results, cfg: dict) -> list[Candidate]:
+def rank(track: dict, results, cfg: dict, loose: bool = False) -> list[Candidate]:
     s = cfg["sync"]
     cands: list[Candidate] = []
     for r in results:
@@ -236,7 +248,10 @@ def rank(track: dict, results, cfg: dict) -> list[Candidate]:
             q = quality_of(ext, bitrate, s["min_lossy_kbps"])
             if q is None or f.filesize < 500_000:
                 continue
-            if not file_matches(track, f.filename, duration, s["duration_tolerance_seconds"]):
+            if loose:
+                if duration and track.get("durationMs") and abs(duration - track["durationMs"] / 1000) > s["duration_tolerance_seconds"] * 3:
+                    continue
+            elif not file_matches(track, f.filename, duration, s["duration_tolerance_seconds"]):
                 continue
             cands.append(Candidate(r.username, f.filename, ext, f.filesize, bitrate, duration,
                                    r.has_free_slots, r.avg_speed, r.queue_size, q))
@@ -305,12 +320,20 @@ class Syncer:
         await asyncio.sleep(self.cfg["sync"]["search_wait_seconds"])
         return list(req.results)
 
-    async def find(self, track: dict) -> list[Candidate]:
+    async def find(self, track: dict) -> tuple[list[Candidate], dict]:
+        """Candidates for the first query that yields any, plus what was searched (for the app's results page)."""
+        info = {"queries": [], "filesSeen": 0, "usersSeen": 0}
+        custom = bool((load_json(OVERRIDES_FILE, {}).get(track["id"], {}).get("query") or "").strip())
         for q in search_queries(track):
-            cands = rank(track, await self.search(q), self.cfg)
+            results = await self.search(q)
+            info["queries"].append(q)
+            info["filesSeen"] += sum(len(r.shared_items) for r in results)
+            info["usersSeen"] += len(results)
+            # A custom query is the user's own wording: trust it for the title/artist check, keep the quality rules.
+            cands = rank(track, results, self.cfg, loose=custom and len(info["queries"]) == 1)
             if cands:
-                return cands
-        return []
+                return cands, info
+        return [], info
 
     async def download(self, track: dict, c: Candidate) -> Path | None:
         s = self.cfg["sync"]
@@ -373,19 +396,23 @@ class Syncer:
 
     async def process(self, track: dict) -> str:
         who = f"{', '.join(track['artists'])} – {track['title']}"
-        cands = await self.find(track)
+        cands, info = await self.find(track)
+        reason = ("no results" if info["filesSeen"] == 0
+                  else f"{info['filesSeen']} files from {info['usersSeen']} users, none matched")
         if not cands:
-            log.info("· not found: %s", who)
-            self.mark(track, "not_found")
+            log.info("· not found: %s (%s)", who, reason)
+            self.mark(track, "not_found", reason=reason, queries=info["queries"])
             return "not_found"
         for c in cands[: self.cfg["sync"]["candidates_per_track"]]:
             log.info("↓ %s  ←  %s", who, c.label)
             dest = await self.download(track, c)
             if dest:
                 log.info("✓ %s → _inbox/%s", who, dest.name)
-                self.mark(track, "done", file=dest.name, source=f"{c.username}:{c.path}", format=c.ext)
+                self.mark(track, "done", file=dest.name, source=f"{c.username}:{c.path}", format=c.ext,
+                          bitrate=c.bitrate, sizeBytes=c.size, queries=info["queries"], reason=None)
                 return "done"
-        self.mark(track, "failed")
+        self.mark(track, "failed", reason=f"{min(len(cands), self.cfg['sync']['candidates_per_track'])} sources tried, none delivered",
+                  queries=info["queries"])
         return "failed"
 
     async def run_pass(self, limit: int | None = None) -> dict:
@@ -427,6 +454,18 @@ def setup_logging() -> None:
     logging.getLogger("aioslsk").setLevel(logging.CRITICAL)
 
 
+async def sleep_until_nudged(seconds: float) -> None:
+    """Sleep between passes, but wake early when the app changes the queue or asks for a retry."""
+    def stamp():
+        return tuple(p.stat().st_mtime if p.exists() else 0 for p in (OVERRIDES_FILE, WORK_DIR / "queue.json"))
+    start, before = time.monotonic(), stamp()
+    while time.monotonic() - start < seconds:
+        await asyncio.sleep(10)
+        if stamp() != before:
+            log.info("Queue or retry requests changed — starting a new pass")
+            return
+
+
 async def cmd_run(cfg: dict, once: bool, limit: int | None) -> None:
     s = Syncer(cfg)
     await s.connect()
@@ -436,7 +475,7 @@ async def cmd_run(cfg: dict, once: bool, limit: int | None) -> None:
             if once:
                 break
             log.info("Sleeping %d min (checks the library again for new playlist tracks)", cfg["sync"]["interval_minutes"])
-            await asyncio.sleep(cfg["sync"]["interval_minutes"] * 60)
+            await sleep_until_nudged(cfg["sync"]["interval_minutes"] * 60)
     finally:
         await s.close()
 

@@ -48,11 +48,42 @@ struct AppState: Codable {
 }
 
 enum SidebarItem: Hashable {
-    case home, all, missing, downloaded, ignored, files, playlist(String), genre(String), log, soundcloud, soulseek, queue
+    case home, all, missing, downloaded, ignored, files, playlist(String), genre(String), log, soundcloud, soulseek, queue, results
+}
+
+/// One track's entry in _soulseek/sync.json (written by slsk-sync).
+struct SyncRecord {
+    var status: String          // "done", "not_found", "failed"
+    var lastTry: String         // ISO 8601, UTC
+    var attempts: Int
+    var reason: String?         // e.g. "no results", "312 files from 40 users, none matched"
+    var queries: [String]
+    var format: String?
+    var bitrate: Int?
+    var sizeBytes: Int?
+    var source: String?         // "user:remote path"
+    var file: String?
+
+    init(_ d: [String: Any]) {
+        status = d["status"] as? String ?? ""
+        lastTry = d["last_try"] as? String ?? ""
+        attempts = d["attempts"] as? Int ?? 0
+        reason = d["reason"] as? String
+        queries = d["queries"] as? [String] ?? []
+        format = d["format"] as? String
+        bitrate = d["bitrate"] as? Int
+        sizeBytes = d["sizeBytes"] as? Int
+        source = d["source"] as? String
+        file = d["file"] as? String
+    }
+
+    var date: Date? { ISO8601DateFormatter().date(from: lastTry) }
 }
 
 struct SoulseekStatus {
     var done = 0, notFound = 0, failed = 0
+    var records: [String: SyncRecord] = [:]     // by track id
+    var overrides: [String: [String: String]] = [:]   // retry requests / custom queries not yet picked up
     var recent: [String] = []      // newest first
     var configured = false         // username + password present in config.toml
     var running = false
@@ -347,6 +378,8 @@ final class LibraryStore: ObservableObject {
     func refreshSoulseek() {
         var s = SoulseekStatus()
         let sync = (try? JSONSerialization.jsonObject(with: Data(contentsOf: AppPaths.slskWorkDir.appendingPathComponent("sync.json")))) as? [String: [String: Any]] ?? [:]
+        s.records = sync.mapValues(SyncRecord.init)
+        s.overrides = (try? JSONSerialization.jsonObject(with: Data(contentsOf: AppPaths.slskWorkDir.appendingPathComponent("overrides.json")))) as? [String: [String: String]] ?? [:]
         for rec in sync.values {
             switch rec["status"] as? String {
             case "done": s.done += 1
@@ -380,6 +413,28 @@ final class LibraryStore: ObservableObject {
         } catch {
             log("soulseek", nil, "couldn't start slsk-sync: \(error.localizedDescription)")
         }
+        save()
+        refreshSoulseek()
+    }
+
+    /// Asks slsk-sync to try these tracks again on its next pass (it wakes within ~10 s when running),
+    /// optionally with your own search words instead of "artist title".
+    func retrySync(_ ids: [String], query: String? = nil) {
+        let url = AppPaths.slskWorkDir.appendingPathComponent("overrides.json")
+        var all = (try? JSONSerialization.jsonObject(with: Data(contentsOf: url))) as? [String: [String: String]] ?? [:]
+        let now = ISO8601DateFormatter().string(from: Date())
+        for id in ids {
+            var o = all[id] ?? [:]
+            o["retryAt"] = now
+            if let q = query?.trimmingCharacters(in: .whitespaces) { o["query"] = q.isEmpty ? nil : q }
+            all[id] = o
+        }
+        try? FileManager.default.createDirectory(at: AppPaths.slskWorkDir, withIntermediateDirectories: true)
+        if let data = try? JSONSerialization.data(withJSONObject: all, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: url, options: .atomic)
+        }
+        log("soulseek", ids.count == 1 ? ids[0] : nil,
+            ids.count == 1 ? "retry requested: \(describe(ids[0]))" + (query.map { " (search: \($0))" } ?? "") : "retry requested for \(ids.count) tracks")
         save()
         refreshSoulseek()
     }

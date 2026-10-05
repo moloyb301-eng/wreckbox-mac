@@ -21,10 +21,11 @@ struct DJApp: App {
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                     if store.soulseek.running { store.stopSoulseek() }
                 }
-                .frame(minWidth: 1180, minHeight: 720)
+                .frame(minWidth: 980, minHeight: 620)
                 .preferredColorScheme(.dark)
         }
         .windowStyle(.hiddenTitleBar)
+        .windowResizability(.contentMinSize)
     }
 }
 
@@ -35,7 +36,9 @@ struct ContentView: View {
 
     var body: some View {
         let focused = store.focus.flatMap { store.row($0) }
-        ZStack {
+        GeometryReader { g in
+        let overlay = g.size.width < 1320
+        ZStack(alignment: .trailing) {
             AmbientBackground(row: focused)
             HStack(spacing: 0) {
                 Sidebar().frame(width: 252)
@@ -48,6 +51,7 @@ struct ContentView: View {
                         case .soundcloud: SoundCloudView()
                         case .soulseek: SoulseekView()
                         case .queue: QueueView()
+                        case .results: SyncResultsView()
                         case .log: LogView()
                         case .files: FilesView()
                         default: TrackListView(item: store.sidebar)
@@ -55,11 +59,17 @@ struct ContentView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if let r = focused, showsInspector {
+                if let r = focused, showsInspector, !overlay {
                     Inspector(row: r).frame(width: 340).transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
-            .animation(.spring(response: 0.35, dampingFraction: 0.9), value: store.focus)
+            if let r = focused, showsInspector, overlay {
+                Inspector(row: r, floating: true).frame(width: 340)
+                    .shadow(color: .black.opacity(0.55), radius: 30, x: -10)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+        .animation(.spring(response: 0.35, dampingFraction: 0.9), value: store.focus)
         }
         .foregroundStyle(Theme.text)
         .font(Theme.ui(13))
@@ -67,7 +77,7 @@ struct ContentView: View {
 
     private var showsInspector: Bool {
         switch store.sidebar {
-        case .soundcloud, .soulseek, .log: return false
+        case .soundcloud, .soulseek, .log, .results, .queue: return false
         default: return true
         }
     }
@@ -176,6 +186,8 @@ struct Sidebar: View {
                     section("Tools")
                     SideItem(item: .queue, title: "Download queue", icon: "list.number", count: store.priorities.isEmpty ? nil : store.priorities.count)
                     SideItem(item: .soulseek, title: "Soulseek sync", icon: "arrow.down.circle", live: store.soulseek.running)
+                    SideItem(item: .results, title: "Sync results", icon: "checklist",
+                             count: store.soulseek.notFound + store.soulseek.failed == 0 ? nil : store.soulseek.notFound + store.soulseek.failed)
                     SideItem(item: .soundcloud, title: "SoundCloud", icon: "cloud")
                     SideItem(item: .log, title: "Activity", icon: "clock.arrow.circlepath")
                 }
@@ -264,6 +276,7 @@ struct TrackListView: View {
                 }
             }
             FilterRow(search: $search, filter: $filter)
+            GeometryReader { g in
             VStack(spacing: 0) {
                 ColumnHeader(sort: $sort, ascending: $ascending)
                 Divider().overlay(Theme.hairline)
@@ -281,6 +294,8 @@ struct TrackListView: View {
                         .padding(6)
                     }
                 }
+            }
+            .environment(\.columnFit, ColumnFit(width: g.size.width))
             }
             .glass(Theme.Radius.card)
         }
@@ -362,12 +377,28 @@ func findOnSoundCloud(store: LibraryStore, browser: SoundCloudBrowser, id: Strin
     browser.search("\(t.artists.first ?? "") \(t.title)")
 }
 
+/// Which optional columns fit, from the list's width.
+struct ColumnFit: Equatable {
+    var energy = true
+    var genre = true
+    init(width: CGFloat = 2000) { genre = width >= 880; energy = width >= 720 }
+}
+
+private struct ColumnFitKey: EnvironmentKey { static let defaultValue = ColumnFit() }
+extension EnvironmentValues {
+    var columnFit: ColumnFit {
+        get { self[ColumnFitKey.self] }
+        set { self[ColumnFitKey.self] = newValue }
+    }
+}
+
 /// Column widths shared by the header and rows.
 enum Col {
     static let art: CGFloat = 40, bpm: CGFloat = 60, key: CGFloat = 66, energy: CGFloat = 56, genre: CGFloat = 130, time: CGFloat = 46, status: CGFloat = 26
 }
 
 struct ColumnHeader: View {
+    @Environment(\.columnFit) private var fit
     @Binding var sort: SortKey
     @Binding var ascending: Bool
 
@@ -377,8 +408,8 @@ struct ColumnHeader: View {
             head("Title", .title).frame(maxWidth: .infinity, alignment: .leading)
             head("BPM", .bpm).frame(width: Col.bpm, alignment: .leading)
             head("Key", .key).frame(width: Col.key, alignment: .leading)
-            head("Energy", .energy).frame(width: Col.energy, alignment: .leading)
-            head("Genre", .genre).frame(width: Col.genre, alignment: .leading)
+            if fit.energy { head("Energy", .energy).frame(width: Col.energy, alignment: .leading) }
+            if fit.genre { head("Genre", .genre).frame(width: Col.genre, alignment: .leading) }
             head("Time", .time).frame(width: Col.time, alignment: .trailing)
             head("", .status).frame(width: Col.status)
         }
@@ -401,6 +432,7 @@ struct ColumnHeader: View {
 }
 
 struct TrackRowView: View {
+    @Environment(\.columnFit) private var fit
     let row: Row
     let selected: Bool
     let focused: Bool
@@ -417,9 +449,11 @@ struct TrackRowView: View {
             BPMReadout(bpm: row.bestBPM, unsure: row.bpmText.hasSuffix("?")).frame(width: Col.bpm, alignment: .leading)
                 .help(row.bpmSource)
             KeyBadge(camelot: row.camelot, unsure: row.keyUnsure).frame(width: Col.key, alignment: .leading).help(row.keyText)
-            EnergyMeter(value: row.energy).frame(width: Col.energy, alignment: .leading)
-            Text(row.genre).font(Theme.ui(12)).foregroundStyle(row.genreUnsure ? Theme.text3 : Theme.text2).lineLimit(1)
-                .frame(width: Col.genre, alignment: .leading).help(row.genreHelp)
+            if fit.energy { EnergyMeter(value: row.energy).frame(width: Col.energy, alignment: .leading) }
+            if fit.genre {
+                Text(row.genre).font(Theme.ui(12)).foregroundStyle(row.genreUnsure ? Theme.text3 : Theme.text2).lineLimit(1)
+                    .frame(width: Col.genre, alignment: .leading).help(row.genreHelp)
+            }
             Text(row.durationText).font(Theme.dot(12)).foregroundStyle(Theme.text3).frame(width: Col.time, alignment: .trailing)
             StatusDot(status: row.status).frame(width: Col.status).help(row.state?.localPath ?? row.statusText)
         }
@@ -481,6 +515,14 @@ struct FilterRow: View {
                                                       ("130–145", "130", "145"), ("145+", "145", "")]
 
     var body: some View {
+        // Drop the BPM preset chips when the window is too narrow for them.
+        ViewThatFits(in: .horizontal) {
+            content(presets: true)
+            content(presets: false)
+        }
+    }
+
+    private func content(presets: Bool) -> some View {
         HStack(spacing: 8) {
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(Theme.text3)
@@ -494,7 +536,7 @@ struct FilterRow: View {
             .background(Capsule().fill(Theme.glassFill).overlay(Capsule().strokeBorder(Theme.hairline)))
 
             DotLabel("BPM", size: 10).padding(.leading, 6)
-            ForEach(Self.presets, id: \.0) { label, lo, hi in
+            ForEach(presets ? Self.presets : [], id: \.0) { label, lo, hi in
                 Chip(label: label, selected: filter.minBPM == lo && filter.maxBPM == hi) {
                     if filter.minBPM == lo && filter.maxBPM == hi { filter.minBPM = ""; filter.maxBPM = "" }
                     else { filter.minBPM = lo; filter.maxBPM = hi }
@@ -529,7 +571,7 @@ struct FilterRow: View {
                 Chip(label: "+ compatible keys", selected: false, smart: filter.compatible) { filter.compatible.toggle() }
                     .help("Include keys one step around the Camelot wheel and the relative major/minor")
             }
-            Spacer()
+            Spacer(minLength: 0)
             if filter.isActive {
                 Button("Clear") { filter = MixFilter() }.buttonStyle(.plain).font(Theme.ui(12.5, .semibold)).foregroundStyle(Theme.text2)
             }
@@ -543,6 +585,8 @@ struct Inspector: View {
     @EnvironmentObject var store: LibraryStore
     @EnvironmentObject var browser: SoundCloudBrowser
     let row: Row
+    /// Floating over the list (narrow windows): needs a solid backing so the list doesn't show through.
+    var floating = false
 
     var body: some View {
         Scroller(indicators: false) {
@@ -612,6 +656,9 @@ struct Inspector: View {
                 }
             }
             .padding(18)
+        }
+        .background {
+            if floating { RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous).fill(Theme.bgRaised.opacity(0.96)) }
         }
         .glass(Theme.Radius.card)
         .padding(.vertical, 10).padding(.trailing, 10)

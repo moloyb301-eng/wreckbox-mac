@@ -14,6 +14,7 @@ enum Snapshot {
         let browser = SoundCloudBrowser()
         let firstWithFile = store.library?.tracks.first { store.state.tracks[$0.id]?.status == .downloaded }?.id
         let screens: [(String, SidebarItem, String?)] = [
+            ("narrow-all-tracks", .all, firstWithFile), ("results", .results, nil),
             ("home", .home, nil), ("all-tracks", .all, firstWithFile), ("playlist", .playlist(store.library?.playlists.first?.name ?? ""), nil),
             ("soulseek", .soulseek, nil), ("files", .files, nil), ("queue", .queue, nil),
         ]
@@ -24,10 +25,11 @@ enum Snapshot {
                 store.state.downloadPriority = ["playlist:hard beatz", "genre:" + (store.genreCounts.first?.0 ?? "")]
             }
             let view = ContentView().environmentObject(store).environmentObject(browser)
-                .frame(width: 1440, height: 900).preferredColorScheme(.dark)
+                .frame(width: name.hasPrefix("narrow") ? 1000 : 1440, height: name.hasPrefix("narrow") ? 660 : 900).preferredColorScheme(.dark)
                 .environment(\.colorScheme, .dark).environment(\.snapshotMode, true)
             let r = ImageRenderer(content: view)
             r.scale = 1
+            store.refreshSoulseek()
             if let img = r.nsImage, let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
                let png = rep.representation(using: .png, properties: [:]) {
                 try? png.write(to: out.appendingPathComponent(name + ".png"))
