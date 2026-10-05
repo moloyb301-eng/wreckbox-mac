@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as dt
-import fcntl
 import json
 import logging
 import os
@@ -39,14 +38,15 @@ from aioslsk.settings import CredentialsSettings, Settings, SharedDirectorySetti
 from aioslsk.transfer.state import TransferState
 
 HERE = Path(__file__).resolve().parent
-LIBRARY_ROOT = Path.home() / "Music" / "DJ Library"
+# The apps pass their own locations; the defaults match the original Mac setup.
+LIBRARY_ROOT = Path(os.environ.get("WRECKBOX_ROOT") or (Path.home() / "Music" / "DJ Library"))
 WORK_DIR = LIBRARY_ROOT / "_soulseek"
 INCOMING = WORK_DIR / "incoming"          # aioslsk writes partial files here
 INBOX = LIBRARY_ROOT / "_inbox"           # finished files are handed to the app here
 SYNC_FILE = WORK_DIR / "sync.json"
 OVERRIDES_FILE = WORK_DIR / "overrides.json"   # written by the DJ Library app: retry requests + custom queries
 LOG_FILE = WORK_DIR / "sync.log"
-CONFIG_FILE = HERE / "config.toml"
+CONFIG_FILE = Path(os.environ.get("WRECKBOX_SLSK_CONFIG") or (HERE / "config.toml"))
 
 log = logging.getLogger("slsk-sync")
 
@@ -280,16 +280,22 @@ def acquire_lock() -> None:
     """Only one slsk-sync at a time: hold an exclusive lock on _soulseek/sync.pid (the app reads it too)."""
     global _lock_file
     WORK_DIR.mkdir(parents=True, exist_ok=True)
-    _lock_file = open(WORK_DIR / "sync.pid", "a+")
+    lock_path = WORK_DIR / "sync.lock"
+    _lock_file = open(lock_path, "a+")
     try:
-        fcntl.flock(_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        _lock_file.seek(0)
-        fail(f"slsk-sync is already running (pid {_lock_file.read().strip() or '?'}) — not starting a second copy.")
-    _lock_file.seek(0)
-    _lock_file.truncate()
-    _lock_file.write(str(os.getpid()))
-    _lock_file.flush()
+        if os.name == "nt":
+            import msvcrt
+            _lock_file.seek(0)
+            msvcrt.locking(_lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        pid = (WORK_DIR / "sync.pid").read_text().strip() if (WORK_DIR / "sync.pid").exists() else "?"
+        fail(f"slsk-sync is already running (pid {pid}) — not starting a second copy.")
+    # The pid lives in its own file so other programs can read it while the lock is held (Windows
+    # byte-range locks block reads of the locked file).
+    (WORK_DIR / "sync.pid").write_text(str(os.getpid()))
 
 
 def fail(message: str) -> None:

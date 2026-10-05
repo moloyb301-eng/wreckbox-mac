@@ -440,14 +440,14 @@ final class LibraryStore: ObservableObject {
         return Array(text.split(separator: "\n").suffix(lines).map(String.init))
     }
 
-    /// PID of the slsk-sync process holding _soulseek/sync.pid's lock, or nil if none is running.
+    /// PID of the slsk-sync process holding _soulseek/sync.lock, or nil if none is running.
     nonisolated static func syncLockHolder() -> Int32? {
-        let path = AppPaths.slskWorkDir.appendingPathComponent("sync.pid").path
-        let fd = open(path, O_RDONLY)
+        let lock = AppPaths.slskWorkDir.appendingPathComponent("sync.lock").path
+        let fd = open(lock, O_RDONLY)
         guard fd >= 0 else { return nil }
         defer { close(fd) }
         if flock(fd, LOCK_SH | LOCK_NB) == 0 { flock(fd, LOCK_UN); return nil }   // nobody holds it
-        let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+        let text = (try? String(contentsOfFile: AppPaths.slskWorkDir.appendingPathComponent("sync.pid").path, encoding: .utf8)) ?? ""
         return Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1
     }
 
