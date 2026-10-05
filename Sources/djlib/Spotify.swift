@@ -16,6 +16,7 @@ struct SpotifyTrack: Codable {
     var explicit: Bool?
     var isLocal: Bool
     var addedAt: String?
+    var artworkURL: String?     // album cover, ~300 px
 }
 
 struct SpotifyPlaylist: Codable {
@@ -150,7 +151,15 @@ enum SpotifyImport {
             durationMs: t["duration_ms"] as? Int,
             explicit: t["explicit"] as? Bool,
             isLocal: t["is_local"] as? Bool ?? false,
-            addedAt: item["added_at"] as? String)
+            addedAt: item["added_at"] as? String,
+            artworkURL: coverURL(album?["images"] as? [[String: Any]]))
+    }
+
+    /// The album image closest to 300 px wide (Spotify lists 640, 300 and 64).
+    static func coverURL(_ images: [[String: Any]]?) -> String? {
+        guard let images, !images.isEmpty else { return nil }
+        let best = images.min { abs(($0["width"] as? Int ?? 640) - 300) < abs(($1["width"] as? Int ?? 640) - 300) }
+        return best?["url"] as? String
     }
 
     // MARK: Output

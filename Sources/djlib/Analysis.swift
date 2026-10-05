@@ -1,8 +1,9 @@
 import Accelerate
 import Foundation
 
-// Full-track analysis of local files: BPM (body of the track, not the intro) and musical key in
-// Camelot notation. Results are cached by path + modification date + size so files are analysed once.
+// Full-track analysis of local files: BPM (body of the track, not the intro), musical key in
+// Camelot notation, energy and loudness. Uses Essentia (analysis/analyze.py) when it is installed,
+// otherwise the built-in DSP below. Results are cached by path + modification date + size.
 
 struct FileAnalysis: Codable {
     var path: String
@@ -16,9 +17,37 @@ struct FileAnalysis: Codable {
     var bpmAlternate: Double?
     var key: String?            // e.g. "A minor"
     var camelot: String?        // e.g. "8A"
-    var keyConfidence: Double?  // 0…1 gap between best and runner-up key
+    var keyConfidence: Double?  // built-in: gap to runner-up key; Essentia: key strength 0…1
     var libraryTrackID: String?
     var analyzedAt: Date
+    // Essentia extras
+    var engine: String?         // "essentia" or nil (built-in)
+    var bpmConfidence: Double?  // 0…1
+    var keyAgreement: Int?      // how many of 3 key profiles agree (1–3)
+    var energy: Double?         // 0…1
+    var danceability: Double?   // 0…1
+    var loudnessLUFS: Double?
+
+    /// Key is uncertain when the profiles disagree or the key is weak.
+    var keyUnsure: Bool {
+        if let a = keyAgreement { return a < 2 || (keyConfidence ?? 1) < 0.5 }
+        return (keyConfidence ?? 1) < 0.05
+    }
+}
+
+private struct EssentiaResult: Decodable {
+    var bpm: Double?
+    var bpmConfidence: Double?
+    var bpmAlternate: Double?
+    var key: String?
+    var camelot: String?
+    var keyStrength: Double?
+    var keyAgreement: Int?
+    var energy: Double?
+    var danceability: Double?
+    var loudnessLUFS: Double?
+    var durationSec: Double?
+    var error: String?
 }
 
 enum Analyzer {
@@ -38,13 +67,41 @@ enum Analyzer {
         try? enc.encode(c).write(to: cacheFile, options: .atomic)
     }
 
+    /// Fresh = same file, and analysed by Essentia if Essentia is available now (older built-in results get redone).
     static func isFresh(_ a: FileAnalysis?, _ rec: TrackRecord) -> Bool {
         guard let a else { return false }
+        if AppPaths.essentiaAvailable && a.engine != "essentia" { return false }
         return a.sizeBytes == rec.sizeBytes && a.modified == rec.modified
     }
 
-    /// Heavy DSP; call off the main thread.
+    /// Heavy work; call off the main thread.
     static func analyze(_ rec: TrackRecord, libraryTrackID: String?) -> FileAnalysis {
+        if AppPaths.essentiaAvailable, let a = analyzeWithEssentia(rec, libraryTrackID: libraryTrackID) { return a }
+        return analyzeBuiltIn(rec, libraryTrackID: libraryTrackID)
+    }
+
+    static func analyzeWithEssentia(_ rec: TrackRecord, libraryTrackID: String?) -> FileAnalysis? {
+        let p = Process()
+        p.executableURL = AppPaths.essentiaPython
+        p.arguments = [AppPaths.essentiaScript.path, rec.path]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return nil }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        guard let line = String(decoding: data, as: UTF8.self).split(separator: "\n").last(where: { $0.hasPrefix("{") }),
+              let r = try? JSONDecoder().decode(EssentiaResult.self, from: Data(line.utf8)), r.error == nil else { return nil }
+        return FileAnalysis(
+            path: rec.path, modified: rec.modified, sizeBytes: rec.sizeBytes, artist: rec.artist, title: rec.title,
+            durationSec: r.durationSec ?? rec.durationSec, bpm: r.bpm,
+            bpmAmbiguous: (r.bpmConfidence ?? 1) < 0.25, bpmAlternate: r.bpmAlternate,
+            key: r.key, camelot: r.camelot, keyConfidence: r.keyStrength, libraryTrackID: libraryTrackID, analyzedAt: Date(),
+            engine: "essentia", bpmConfidence: r.bpmConfidence, keyAgreement: r.keyAgreement,
+            energy: r.energy, danceability: r.danceability, loudnessLUFS: r.loudnessLUFS)
+    }
+
+    static func analyzeBuiltIn(_ rec: TrackRecord, libraryTrackID: String?) -> FileAnalysis {
         let url = URL(fileURLWithPath: rec.path)
         var a = FileAnalysis(path: rec.path, modified: rec.modified, sizeBytes: rec.sizeBytes, artist: rec.artist, title: rec.title,
                              durationSec: rec.durationSec, bpm: nil, bpmAmbiguous: false, libraryTrackID: libraryTrackID, analyzedAt: Date())

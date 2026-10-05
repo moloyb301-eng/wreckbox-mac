@@ -29,7 +29,14 @@ struct AppState: Codable {
 }
 
 enum SidebarItem: Hashable {
-    case all, missing, downloaded, ignored, files, playlist(String), genre(String), log, soundcloud
+    case home, all, missing, downloaded, ignored, files, playlist(String), genre(String), log, soundcloud, soulseek
+}
+
+struct SoulseekStatus {
+    var done = 0, notFound = 0, failed = 0
+    var recent: [String] = []      // newest first
+    var configured = false         // username + password present in config.toml
+    var running = false
 }
 
 struct Row: Identifiable {
@@ -61,6 +68,10 @@ struct Row: Identifiable {
     var bpmSource: String { file?.bpm != nil ? "full-track analysis" : bpm.map { "\($0.source) (30 s preview)" } ?? "" }
     var camelot: String { file?.camelot ?? "" }
     var camelotSort: Int { camelotOrder(file?.camelot) }
+    var keyUnsure: Bool { file?.keyUnsure ?? false }
+    var energy: Double? { file?.energy }
+    var energyValue: Double { energy ?? -1 }
+    var addedValue: String { track.firstAdded ?? "" }
     var keyText: String { file?.key ?? "" }
     var playlistsText: String { track.playlists.joined(separator: ", ") }
     var durationText: String { track.durationMs.map { String(format: "%d:%02d", $0 / 60000, $0 / 1000 % 60) } ?? "" }
@@ -73,7 +84,7 @@ final class LibraryStore: ObservableObject {
     @Published var bpm: [String: BPMResult] = [:]
     @Published var analysis: [String: FileAnalysis] = [:]   // keyed by file path
     @Published var genres: [String: GenreInfo] = [:]
-    @Published var sidebar: SidebarItem? = .all
+    @Published var sidebar: SidebarItem? = .home
     @Published var busy: String?
     @Published var loadError: String?
     /// The track the user is currently hunting for on SoundCloud; the next download is attached to it.
@@ -265,15 +276,106 @@ final class LibraryStore: ObservableObject {
     private var inboxSeen: Set<String> = []
     private var inboxWatcher: Task<Void, Never>?
 
-    /// Imports whatever lands in _inbox (e.g. from slsk-sync, which moves only finished files in).
+    /// Imports whatever lands in _inbox (e.g. from slsk-sync, which moves only finished files in),
+    /// refreshes the Soulseek status, and relinks downloaded tracks whose files were moved.
     func startInboxWatcher() {
         guard inboxWatcher == nil else { return }
+        if hasMovedFiles { Task { await rescan() } }
         inboxWatcher = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.importInbox()
+                self?.refreshSoulseek()
                 try? await Task.sleep(for: .seconds(15))
             }
         }
+    }
+
+    /// A downloaded track whose file is no longer at its recorded path (moved or deleted).
+    var hasMovedFiles: Bool {
+        state.tracks.values.contains { $0.status == .downloaded && !FileManager.default.fileExists(atPath: $0.localPath ?? "") }
+    }
+
+    // MARK: Soulseek sync (soulseek/slsk-sync)
+
+    @Published var soulseek = SoulseekStatus()
+    private var slskProcess: Process?
+
+    func refreshSoulseek() {
+        var s = SoulseekStatus()
+        let sync = (try? JSONSerialization.jsonObject(with: Data(contentsOf: AppPaths.slskWorkDir.appendingPathComponent("sync.json")))) as? [String: [String: Any]] ?? [:]
+        for rec in sync.values {
+            switch rec["status"] as? String {
+            case "done": s.done += 1
+            case "not_found": s.notFound += 1
+            case "failed": s.failed += 1
+            default: break
+            }
+        }
+        if let log = try? String(contentsOf: AppPaths.slskWorkDir.appendingPathComponent("sync.log"), encoding: .utf8) {
+            s.recent = Array(log.split(separator: "\n").suffix(40).reversed().map(String.init))
+        }
+        let cfg = (try? String(contentsOf: AppPaths.slskConfig, encoding: .utf8)) ?? ""
+        s.configured = cfg.range(of: #"(?m)^username\s*=\s*"[^"]+""#, options: .regularExpression) != nil
+            && cfg.range(of: #"(?m)^password\s*=\s*"[^"]+""#, options: .regularExpression) != nil
+        s.running = slskProcess?.isRunning ?? false
+        soulseek = s
+    }
+
+    func startSoulseek() {
+        guard slskProcess?.isRunning != true, FileManager.default.isExecutableFile(atPath: AppPaths.slskSync.path) else { return }
+        let p = Process()
+        p.executableURL = AppPaths.slskSync
+        p.arguments = ["run"]
+        p.standardOutput = FileHandle.nullDevice   // it writes its own log
+        p.standardError = FileHandle.nullDevice
+        p.terminationHandler = { _ in Task { @MainActor [weak self] in self?.refreshSoulseek() } }
+        do {
+            try p.run()
+            slskProcess = p
+            log("soulseek", nil, "sync started")
+        } catch {
+            log("soulseek", nil, "couldn't start slsk-sync: \(error.localizedDescription)")
+        }
+        save()
+        refreshSoulseek()
+    }
+
+    func stopSoulseek() {
+        slskProcess?.terminate()
+        slskProcess = nil
+        log("soulseek", nil, "sync stopped")
+        save()
+        refreshSoulseek()
+    }
+
+    // MARK: Queries for the dashboard and inspector
+
+    func row(_ id: String) -> Row? {
+        guard let t = track(id) else { return nil }
+        let st = state.tracks[id]
+        return Row(track: t, state: st, bpm: bpm[id], file: st?.localPath.flatMap { analysis[$0] },
+                   genreInfo: genres[id], genreOverride: state.genreOverrides[id])
+    }
+
+    var recentlyAdded: [Row] {
+        (library?.tracks ?? []).sorted { ($0.firstAdded ?? "") > ($1.firstAdded ?? "") }.prefix(16).compactMap { row($0.id) }
+    }
+
+    func downloadedCount(_ p: LibraryPlaylist) -> Int {
+        p.trackIDs.filter { state.tracks[$0]?.status == .downloaded }.count
+    }
+
+    /// Tracks you have that mix with `r`: compatible Camelot key and tempo within ±6% (also at half/double time).
+    func mixesWith(_ r: Row) -> [Row] {
+        guard let bpm = r.bestBPM, let key = r.camelot.isEmpty ? nil : r.camelot else { return [] }
+        let keys = Analyzer.compatible(key)
+        func tempoGap(_ b: Double) -> Double { [b, b * 2, b / 2].map { abs($0 - bpm) / bpm }.min() ?? 1 }
+        return (library?.tracks ?? []).compactMap { t -> (Row, Double)? in
+            guard t.id != r.id, let o = row(t.id), let ob = o.bestBPM, keys.contains(o.camelot) else { return nil }
+            let gap = tempoGap(ob)
+            return gap <= 0.06 ? (o, gap + (o.camelot == key ? 0 : 0.01)) : nil
+        }
+        .sorted { $0.1 < $1.1 }.prefix(12).map(\.0)
     }
 
     func importInbox() async {

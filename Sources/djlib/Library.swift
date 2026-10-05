@@ -17,6 +17,7 @@ struct LibraryTrack: Codable {
     var fileName: String        // target "Artist - Title.ext" stem for when the file arrives
     var localPath: String?      // filled in by the matcher
     var status: String          // "missing" until a file is matched
+    var artworkURL: String?     // Spotify album cover
 }
 
 struct LibraryPlaylist: Codable {
@@ -67,6 +68,7 @@ func buildLibrary() throws {
                 if let sid = t.spotifyID, !tracks[i].spotifyIDs.contains(sid) { tracks[i].spotifyIDs.append(sid) }
                 if !tracks[i].playlists.contains(s.name) { tracks[i].playlists.append(s.name) }
                 if let a = t.addedAt, a < (tracks[i].firstAdded ?? "~") { tracks[i].firstAdded = a }
+                if tracks[i].artworkURL == nil { tracks[i].artworkURL = t.artworkURL }
                 keys.forEach { index[$0] = i }
                 ids.append(tracks[i].id)
                 continue
@@ -78,7 +80,7 @@ func buildLibrary() throws {
                 spotifyIDs: t.spotifyID.map { [$0] } ?? [], durationMs: t.durationMs,
                 playlists: [s.name], firstAdded: t.addedAt,
                 fileName: safeFileName("\(t.artists.joined(separator: ", ")) - \(t.name)"),
-                localPath: nil, status: "missing"))
+                localPath: nil, status: "missing", artworkURL: t.artworkURL))
             keys.forEach { index[$0] = tracks.count - 1 }
             ids.append(id)
         }
