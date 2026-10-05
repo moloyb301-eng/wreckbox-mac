@@ -4,6 +4,15 @@ import SwiftUI
 /// Closing the window quits the app, so reopening it always starts the current build.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    /// Stop the Soulseek sync this app started, so it never keeps running orphaned after quitting.
+    func applicationWillTerminate(_ notification: Notification) {
+        guard let p = LibraryStore.syncProcess, p.isRunning else { return }
+        p.terminate()
+        let deadline = Date().addingTimeInterval(3)
+        while p.isRunning && Date() < deadline { usleep(100_000) }
+        if p.isRunning { kill(p.processIdentifier, SIGKILL) }
+    }
 }
 
 struct DJApp: App {
@@ -24,9 +33,6 @@ struct DJApp: App {
                 .environmentObject(store)
                 .environmentObject(browser)
                 .onAppear { browser.store = store; store.startInboxWatcher(); store.refreshSoulseek() }
-                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
-                    if store.soulseek.running { store.stopSoulseek() }
-                }
                 .frame(minWidth: 980, minHeight: 620)
                 .preferredColorScheme(.dark)
         }

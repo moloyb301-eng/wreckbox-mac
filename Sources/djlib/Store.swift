@@ -373,7 +373,12 @@ final class LibraryStore: ObservableObject {
     // MARK: Soulseek sync (soulseek/slsk-sync)
 
     @Published var soulseek = SoulseekStatus()
-    private var slskProcess: Process?
+    /// The sync process this app started (static so the app delegate can stop it on quit).
+    nonisolated(unsafe) static var syncProcess: Process?
+    private var slskProcess: Process? {
+        get { Self.syncProcess }
+        set { Self.syncProcess = newValue }
+    }
 
     func refreshSoulseek() {
         var s = SoulseekStatus()
