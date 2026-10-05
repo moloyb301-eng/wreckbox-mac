@@ -26,6 +26,10 @@ struct AppState: Codable {
     var log: [LogEntry] = []
     var genreOverrides: [String: String] = [:]   // track id → genre you set by hand
     var scanFolders: [String] = ["~/Music/DJ Library/Tracks", "~/Music/rekordbox", "~/Music/Music", "~/Documents/06 Music & DJ", "~/Downloads", "~/Desktop"]
+    /// Download order: "playlist:<name>" / "genre:<name>", highest priority first.
+    var downloadPriority: [String] = []
+    /// When true, only tracks matched by `downloadPriority` are downloaded.
+    var priorityOnly = false
 
     init() {}
 
@@ -38,11 +42,13 @@ struct AppState: Codable {
         log = try c.decodeIfPresent([LogEntry].self, forKey: .log) ?? d.log
         genreOverrides = try c.decodeIfPresent([String: String].self, forKey: .genreOverrides) ?? d.genreOverrides
         scanFolders = try c.decodeIfPresent([String].self, forKey: .scanFolders) ?? d.scanFolders
+        downloadPriority = try c.decodeIfPresent([String].self, forKey: .downloadPriority) ?? d.downloadPriority
+        priorityOnly = try c.decodeIfPresent(Bool.self, forKey: .priorityOnly) ?? d.priorityOnly
     }
 }
 
 enum SidebarItem: Hashable {
-    case home, all, missing, downloaded, ignored, files, playlist(String), genre(String), log, soundcloud, soulseek
+    case home, all, missing, downloaded, ignored, files, playlist(String), genre(String), log, soundcloud, soulseek, queue
 }
 
 struct SoulseekStatus {
@@ -317,6 +323,7 @@ final class LibraryStore: ObservableObject {
     /// refreshes the Soulseek status, and relinks downloaded tracks whose files were moved.
     func startInboxWatcher() {
         guard inboxWatcher == nil else { return }
+        writeQueue()
         if hasMovedFiles { Task { await rescan() } }
         inboxWatcher = Task { [weak self] in
             while !Task.isCancelled {

@@ -47,6 +47,7 @@ struct ContentView: View {
                         case .home, nil: HomeView()
                         case .soundcloud: SoundCloudView()
                         case .soulseek: SoulseekView()
+                        case .queue: QueueView()
                         case .log: LogView()
                         case .files: FilesView()
                         default: TrackListView(item: store.sidebar)
@@ -173,6 +174,7 @@ struct Sidebar: View {
                     }
 
                     section("Tools")
+                    SideItem(item: .queue, title: "Download queue", icon: "list.number", count: store.priorities.isEmpty ? nil : store.priorities.count)
                     SideItem(item: .soulseek, title: "Soulseek sync", icon: "arrow.down.circle", live: store.soulseek.running)
                     SideItem(item: .soundcloud, title: "SoundCloud", icon: "cloud")
                     SideItem(item: .log, title: "Activity", icon: "clock.arrow.circlepath")
@@ -248,7 +250,18 @@ struct TrackListView: View {
         VStack(alignment: .leading, spacing: 16) {
             PageHeader(eyebrow: eyebrow, title: title,
                        subtitle: "\(rows.count) tracks · \(rows.filter { $0.status == .downloaded }.count) in your crate") {
-                LibraryActions()
+                HStack(spacing: 8) {
+                    if let p = priority {
+                        let rank = store.priorities.firstIndex(of: p)
+                        PillButton(label: rank == 0 ? "First in queue" : rank != nil ? "#\(rank! + 1) in queue · move to top" : "Download first",
+                                   icon: "list.number", style: .smart) {
+                            store.setPriorities([p] + store.priorities.filter { $0 != p })
+                        }
+                        .disabled(rank == 0)
+                        .help("Put this \(p.kind)'s missing tracks at the front of the Soulseek download queue")
+                    }
+                    LibraryActions()
+                }
             }
             FilterRow(search: $search, filter: $filter)
             VStack(spacing: 0) {
@@ -310,6 +323,14 @@ struct TrackListView: View {
         case .time: return by { $0.track.durationMs ?? 0 }
         case .status: return by { $0.status.rawValue }
         case .added: return by(\.addedValue)
+        }
+    }
+
+    private var priority: Priority? {
+        switch item {
+        case .playlist(let n): return Priority(kind: "playlist", name: n)
+        case .genre(let g): return Priority(kind: "genre", name: g)
+        default: return nil
         }
     }
 

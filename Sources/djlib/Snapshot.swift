@@ -15,11 +15,14 @@ enum Snapshot {
         let firstWithFile = store.library?.tracks.first { store.state.tracks[$0.id]?.status == .downloaded }?.id
         let screens: [(String, SidebarItem, String?)] = [
             ("home", .home, nil), ("all-tracks", .all, firstWithFile), ("playlist", .playlist(store.library?.playlists.first?.name ?? ""), nil),
-            ("soulseek", .soulseek, nil), ("files", .files, nil),
+            ("soulseek", .soulseek, nil), ("files", .files, nil), ("queue", .queue, nil),
         ]
         for (name, item, focus) in screens {
             store.sidebar = item
             store.focus = focus
+            if item == .queue {   // sample priorities, in memory only (never saved)
+                store.state.downloadPriority = ["playlist:hard beatz", "genre:" + (store.genreCounts.first?.0 ?? "")]
+            }
             let view = ContentView().environmentObject(store).environmentObject(browser)
                 .frame(width: 1440, height: 900).preferredColorScheme(.dark)
                 .environment(\.colorScheme, .dark).environment(\.snapshotMode, true)

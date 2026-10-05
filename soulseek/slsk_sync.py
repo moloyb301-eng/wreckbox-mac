@@ -127,6 +127,13 @@ def missing_tracks(cfg: dict, sync: dict) -> list[dict]:
         out.append(t)
     # Newest additions first, so fresh playlist adds arrive quickly.
     out.sort(key=lambda t: t.get("firstAdded") or "", reverse=True)
+    # The DJ Library app's Download queue (playlist / genre priorities) overrides that order.
+    queue = load_json(WORK_DIR / "queue.json", None)
+    if queue and queue.get("ids"):
+        rank = {tid: i for i, tid in enumerate(queue["ids"])}
+        if queue.get("onlyPriority"):
+            out = [t for t in out if t["id"] in rank]
+        out.sort(key=lambda t: rank.get(t["id"], len(rank)))   # stable: unranked keep newest-first
     return out
 
 # ── Matching + ranking ───────────────────────────────────────────────────────
@@ -191,6 +198,8 @@ def quality_of(ext: str, bitrate: int | None, min_kbps: int) -> float | None:
         return None  # lossy file of unknown quality — skip
     if bitrate < min_kbps:
         return None
+    # Lossy tops out at 320 kbps; higher claims are mislabelled, so never let them outrank lossless (10+).
+    bitrate = min(bitrate, 320)
     return {"mp3": 0.0, "m4a": -0.5, "aac": -0.5, "ogg": -1.0, "opus": -1.0}.get(ext, -2) + bitrate / 32
 
 
@@ -381,6 +390,8 @@ class Syncer:
 
     async def run_pass(self, limit: int | None = None) -> dict:
         tracks = missing_tracks(self.cfg, self.sync)
+        if (WORK_DIR / "queue.json").exists():
+            log.info("Following the app's download queue")
         if limit:
             tracks = tracks[:limit]
         log.info("Pass: %d tracks to look for", len(tracks))

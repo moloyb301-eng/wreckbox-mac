@@ -138,9 +138,40 @@ struct PlaylistTile: View {
 /// Smart tile on Home: Soulseek sync status and start/stop.
 struct SoulseekTile: View {
     @EnvironmentObject var store: LibraryStore
+    var compact = false
 
     var body: some View {
         let s = store.soulseek
+        if compact {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Image(systemName: s.running ? "arrow.down.circle.fill" : "arrow.down.circle")
+                        .font(.system(size: 20, weight: .light)).foregroundStyle(Theme.smart)
+                    DotLabel("Soulseek sync", color: Theme.text)
+                    Spacer()
+                    button(s)
+                }
+                Text(statusLine(s)).font(Theme.ui(12.5)).foregroundStyle(Theme.text2).lineLimit(2)
+                HStack(spacing: 22) { counter("Got", s.done); counter("Not found", s.notFound); counter("Failed", s.failed) }
+            }
+            .padding(16)
+            .smartGlass(Theme.Radius.tile)
+        } else {
+            wide(s)
+        }
+    }
+
+    @ViewBuilder private func button(_ s: SoulseekStatus) -> some View {
+        if s.configured {
+            PillButton(label: s.running ? "Stop" : "Start sync", icon: s.running ? "stop.fill" : "play.fill", style: s.running ? .glass : .smart) {
+                s.running ? store.stopSoulseek() : store.startSoulseek()
+            }
+        } else {
+            PillButton(label: "Set up", icon: "gearshape") { store.sidebar = .soulseek }
+        }
+    }
+
+    private func wide(_ s: SoulseekStatus) -> some View {
         HStack(alignment: .center, spacing: 18) {
             Image(systemName: s.running ? "arrow.down.circle.fill" : "arrow.down.circle")
                 .font(.system(size: 30, weight: .light)).foregroundStyle(Theme.smart)
@@ -154,13 +185,7 @@ struct SoulseekTile: View {
                 counter("Not found", s.notFound)
                 counter("Failed", s.failed)
             }
-            if s.configured {
-                PillButton(label: s.running ? "Stop" : "Start sync", icon: s.running ? "stop.fill" : "play.fill", style: s.running ? .glass : .smart) {
-                    s.running ? store.stopSoulseek() : store.startSoulseek()
-                }
-            } else {
-                PillButton(label: "Set up", icon: "gearshape") { store.sidebar = .soulseek }
-            }
+            button(s)
         }
         .padding(18)
         .smartGlass(Theme.Radius.tile)
