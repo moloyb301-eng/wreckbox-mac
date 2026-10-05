@@ -275,6 +275,11 @@ struct TrackListView: View {
             PageHeader(eyebrow: eyebrow, title: title,
                        subtitle: "\(rows.count) tracks · \(rows.filter { $0.status == .downloaded }.count) in your crate") {
                 HStack(spacing: 8) {
+                    if item == .downloaded, Tagger.available {
+                        PillButton(label: "Write tags to files", icon: "tag", style: .smart) { Task { await store.writeTags() } }
+                            .disabled(store.busy != nil)
+                            .help("Write title, artists, album, year, genre, BPM, key, ISRC and cover art into every file in your crate, so Rekordbox shows the same data. In Rekordbox, select the tracks → right-click → Reload Tag.")
+                    }
                     if let p = priority {
                         let rank = store.priorities.firstIndex(of: p)
                         PillButton(label: rank == 0 ? "First in queue" : rank != nil ? "#\(rank! + 1) in queue · move to top" : "Download first",
@@ -651,6 +656,11 @@ struct Inspector: View {
                                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: p)])
                             }
                             PillButton(label: "Open", icon: "play.fill") { NSWorkspace.shared.open(URL(fileURLWithPath: p)) }
+                        }
+                        if Tagger.available {
+                            PillButton(label: "Write tags to file", icon: "tag", style: .smart) { Task { await store.writeTags([row.id]) } }
+                                .disabled(store.busy != nil)
+                                .help("Write this track's title, artists, album, BPM, key, ISRC and cover into the file")
                         }
                         Text(p.replacingOccurrences(of: home.path, with: "~")).font(Theme.ui(11)).foregroundStyle(Theme.text3).lineLimit(3)
                     } else {

@@ -128,6 +128,8 @@ func buildLibrary() throws {
 
 func safeFileName(_ s: String) -> String {
     let bad = CharacterSet(charactersIn: "/\\:*?\"<>|").union(.controlCharacters)
-    let cleaned = s.components(separatedBy: bad).joined(separator: "_").trimmingCharacters(in: .whitespacesAndNewlines)
-    return String(cleaned.prefix(180))
+    var cleaned = String(s.components(separatedBy: bad).joined(separator: "_").trimmingCharacters(in: .whitespacesAndNewlines).prefix(180))
+    // Trailing dots / spaces read badly before the extension ("Title....flac") and Windows strips them.
+    while let last = cleaned.last, last == "." || last == " " { cleaned.removeLast() }
+    return cleaned
 }

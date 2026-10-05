@@ -353,6 +353,20 @@ final class LibraryStore: ObservableObject {
         log("downloaded", t.id, "\(describe(t.id)) via \(source) → Tracks/\(dest.lastPathComponent)")
         if pendingTrackID == t.id { pendingTrackID = nil }
         save()
+        // Write the Spotify data, BPM, key and cover into the file itself (what Rekordbox reads).
+        if let job = tagJob(t.id) {
+            let results = await Task.detached(priority: .utility) { Tagger.write([job]) }.value
+            if let r = results.first, r.ok, var a = analysis[dest.path],
+               let attrs = try? FileManager.default.attributesOfItem(atPath: dest.path) {
+                a.sizeBytes = (attrs[.size] as? NSNumber)?.int64Value ?? a.sizeBytes
+                a.modified = attrs[.modificationDate] as? Date
+                analysis[dest.path] = a
+                Analyzer.saveCache(analysis)
+            } else if let r = results.first, !r.ok {
+                log("tag failed", t.id, "\(dest.lastPathComponent): \(r.error ?? "unknown error")")
+                save()
+            }
+        }
         return "Added \(describe(t.id))"
     }
 

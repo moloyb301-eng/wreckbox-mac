@@ -30,6 +30,10 @@ do {
     case "snapshot": await Snapshot.run(args: Array(args.dropFirst()))
     case "layout-check": await LayoutCheck.run(args: Array(args.dropFirst()))
     case "make-icon": await IconMaker.run(args: Array(args.dropFirst()))
+    case "tag-job":   // prints the tag job the app would write for a track (no file is changed)
+        let store = await LibraryStore()
+        let id = await args.dropFirst().first ?? (store.library?.tracks.first { store.state.tracks[$0.id]?.status == .downloaded }?.id ?? "")
+        if let job = await store.tagJob(id), let d = try? JSONEncoder().encode([job]) { print(String(decoding: d, as: UTF8.self)) }
     default: print(usage)
     }
 } catch {
