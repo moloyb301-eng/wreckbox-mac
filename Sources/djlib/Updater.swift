@@ -38,7 +38,9 @@ final class Updater: ObservableObject {
     func check() {
         Task.detached(priority: .utility) {
             guard Self.git(["fetch", "--quiet", "origin", "main"]).0 == 0 else { return } // offline: try later
-            let (_, log) = Self.git(["log", "--format=%s", "HEAD..origin/main"])
+            // Compare with the code this app was BUILT from (the repo itself may be newer than the running app).
+            let built = Bundle.main.object(forInfoDictionaryKey: "DJLibBuildCommit") as? String ?? "HEAD"
+            let (_, log) = Self.git(["log", "--format=%s", "\(built.isEmpty ? "HEAD" : built)..origin/main"])
             let titles = log.split(separator: "\n").map(String.init).filter { !$0.hasPrefix("Merge") }
             await MainActor.run { self.pending = titles }
         }

@@ -29,6 +29,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>NSRequiresAquaSystemAppearance</key><false/>
   <key>DJLibRepoDir</key><string>$REPO</string>
+  <key>DJLibBuildCommit</key><string>$(git rev-parse HEAD 2>/dev/null)</string>
 </dict></plist>
 PLIST
 codesign --force --deep -s - "$APP"
