@@ -28,6 +28,7 @@ do {
     case "genres": try await GenreTool.run(args: Array(args.dropFirst()))
     case "inventory": try await runInventory(paths: Array(args.dropFirst()))
     case "snapshot": await Snapshot.run(args: Array(args.dropFirst()))
+    case "layout-check": await LayoutCheck.run(args: Array(args.dropFirst()))
     default: print(usage)
     }
 } catch {

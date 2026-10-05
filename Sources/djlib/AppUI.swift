@@ -51,7 +51,6 @@ struct ContentView: View {
         GeometryReader { g in
         let overlay = g.size.width < 1320
         ZStack(alignment: .trailing) {
-            AmbientBackground(row: focused)
             HStack(spacing: 0) {
                 Sidebar().frame(width: 252)
                 Group {
@@ -81,6 +80,8 @@ struct ContentView: View {
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
+        .frame(width: g.size.width, height: g.size.height)
+        .background(AmbientBackground(row: focused))
         .animation(.spring(response: 0.35, dampingFraction: 0.9), value: store.focus)
         }
         .foregroundStyle(Theme.text)

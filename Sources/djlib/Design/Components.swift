@@ -206,9 +206,14 @@ struct AmbientBackground: View {
         ZStack {
             Theme.bg
             if let image {
-                Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
-                    .blur(radius: 90).opacity(0.38).saturation(1.3)
-                    .transition(.opacity)
+                // Fill the space we're given without ever growing it (an unconstrained .fill image
+                // would size the whole window layout to the cover's aspect ratio).
+                Color.clear.overlay {
+                    Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
+                        .blur(radius: 90).opacity(0.38).saturation(1.3)
+                }
+                .clipped()
+                .transition(.opacity)
             } else {
                 RadialGradient(colors: [Theme.lilac.opacity(0.16), .clear], center: .topTrailing, startRadius: 20, endRadius: 700)
                 RadialGradient(colors: [Theme.peach.opacity(0.08), .clear], center: .bottomLeading, startRadius: 20, endRadius: 600)
