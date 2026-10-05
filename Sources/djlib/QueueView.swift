@@ -91,7 +91,8 @@ struct QueueView: View {
         PageHeader(eyebrow: "Tools", title: "Download queue",
                    subtitle: "Soulseek downloads missing tracks in this order") { EmptyView() }
         HStack(alignment: .top, spacing: 16) {
-            // Left: the priority list
+            // Left: the priority list (scrolls, so a long list never pushes the page past the window)
+            Scroller(indicators: false) {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 12) {
                     DotLabel("Priority", color: Theme.text)
@@ -125,7 +126,7 @@ struct QueueView: View {
                 .glass(Theme.Radius.tile)
 
                 SoulseekTile(compact: true)
-                Spacer(minLength: 0)
+            }
             }
             .frame(width: 380)
 

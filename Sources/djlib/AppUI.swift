@@ -90,7 +90,7 @@ struct ContentView: View {
 
     private var showsInspector: Bool {
         switch store.sidebar {
-        case .soundcloud, .soulseek, .log, .results, .queue: return false
+        case .soundcloud, .soulseek, .log: return false
         default: return true
         }
     }

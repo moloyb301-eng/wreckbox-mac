@@ -50,22 +50,40 @@ actor ArtworkLoader {
 
         await acquire()
         defer { release() }
+        let lookup = Lookup()
         var urls: [URL] = []
         if let s = t.artworkURL, let u = URL(string: s) { urls.append(u) }
-        if let u = await Self.deezerCover(t, deezerID: deezerID) { urls.append(u) }
+        if let u = await Self.deezerCover(t, deezerID: deezerID, lookup) { urls.append(u) }
         for u in urls {
-            if let (data, resp) = try? await URLSession.shared.data(from: u),
-               (resp as? HTTPURLResponse)?.statusCode == 200, let img = NSImage(data: data) {
+            if let data = await Self.fetch(u, lookup), let img = NSImage(data: data) {
                 try? data.write(to: file)
                 return img
             }
         }
-        if let u = await Self.itunesCover(t), let (data, _) = try? await URLSession.shared.data(from: u), let img = NSImage(data: data) {
+        if let u = await Self.itunesCover(t, lookup), let data = await Self.fetch(u, lookup), let img = NSImage(data: data) {
             try? data.write(to: file)
             return img
         }
-        FileManager.default.createFile(atPath: none.path, contents: nil)
+        // Remember "no art anywhere" only when every source actually answered — not when offline,
+        // or the covers would never load once the connection is back.
+        if !lookup.networkFailed { FileManager.default.createFile(atPath: none.path, contents: nil) }
         return nil
+    }
+
+    /// Per-lookup record of whether any request failed for a network / server reason.
+    final class Lookup: @unchecked Sendable { var networkFailed = false }
+
+    static func fetch(_ u: URL, _ lookup: Lookup) async -> Data? {
+        do {
+            let (data, resp) = try await URLSession.shared.data(from: u)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            if code == 200 { return data }
+            if code == 429 || code >= 500 { lookup.networkFailed = true }
+            return nil
+        } catch {
+            lookup.networkFailed = true
+            return nil
+        }
     }
 
     private func acquire() async {
@@ -88,32 +106,32 @@ actor ArtworkLoader {
         return nil
     }
 
-    static func deezerCover(_ t: LibraryTrack, deezerID: Int?) async -> URL? {
+    static func deezerCover(_ t: LibraryTrack, deezerID: Int?, _ lookup: Lookup) async -> URL? {
         var json: [String: Any]?
         if let id = deezerID, let u = URL(string: "https://api.deezer.com/track/\(id)") {
-            json = await getJSON(u)
+            json = await getJSON(u, lookup)
         } else {
             let artist = t.artists.first ?? ""
             let q = "artist:\"\(artist)\" track:\"\(t.title)\""
             var c = URLComponents(string: "https://api.deezer.com/search")!
             c.queryItems = [URLQueryItem(name: "q", value: q), URLQueryItem(name: "limit", value: "1")]
-            json = (await getJSON(c.url!)).flatMap { ($0["data"] as? [[String: Any]])?.first }
+            json = (await getJSON(c.url!, lookup)).flatMap { ($0["data"] as? [[String: Any]])?.first }
         }
         let album = json?["album"] as? [String: Any]
         return (album?["cover_big"] as? String ?? album?["cover_medium"] as? String).flatMap(URL.init(string:))
     }
 
-    static func itunesCover(_ t: LibraryTrack) async -> URL? {
+    static func itunesCover(_ t: LibraryTrack, _ lookup: Lookup) async -> URL? {
         var c = URLComponents(string: "https://itunes.apple.com/search")!
         c.queryItems = [URLQueryItem(name: "term", value: "\(t.artists.first ?? "") \(t.title)"),
                         URLQueryItem(name: "entity", value: "song"), URLQueryItem(name: "limit", value: "1")]
-        guard let r = (await getJSON(c.url!))?["results"] as? [[String: Any]],
+        guard let r = (await getJSON(c.url!, lookup))?["results"] as? [[String: Any]],
               let s = r.first?["artworkUrl100"] as? String else { return nil }
         return URL(string: s.replacingOccurrences(of: "100x100bb", with: "600x600bb"))
     }
 
-    static func getJSON(_ u: URL) async -> [String: Any]? {
-        guard let (data, resp) = try? await URLSession.shared.data(from: u), (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+    static func getJSON(_ u: URL, _ lookup: Lookup) async -> [String: Any]? {
+        guard let data = await fetch(u, lookup) else { return nil }
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 }

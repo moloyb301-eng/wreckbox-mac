@@ -87,6 +87,8 @@ struct SoulseekStatus {
     var recent: [String] = []      // newest first
     var configured = false         // username + password present in config.toml
     var running = false
+    /// A sync this app didn't start (terminal, or left over from an earlier run) that holds the lock.
+    var externalPID: Int32?
 }
 
 struct Row: Identifiable {
@@ -137,7 +139,11 @@ struct Row: Identifiable {
 
 @MainActor
 final class LibraryStore: ObservableObject {
-    @Published var library: Library?
+    @Published var library: Library? {
+        didSet { trackIndex = Dictionary((library?.tracks ?? []).enumerated().map { ($1.id, $0) }, uniquingKeysWith: { a, _ in a }) }
+    }
+    /// Track id → index in library.tracks, so lookups don't scan 1,500+ tracks each time.
+    private var trackIndex: [String: Int] = [:]
     @Published var state = AppState()
     @Published var bpm: [String: BPMResult] = [:]
     @Published var analysis: [String: FileAnalysis] = [:]   // keyed by file path
@@ -186,6 +192,7 @@ final class LibraryStore: ObservableObject {
 
     func save() {
         guard !stateUnreadable else { return }
+        if state.log.count > 5000 { state.log.removeFirst(state.log.count - 5000) }
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         enc.dateEncodingStrategy = .iso8601
@@ -196,7 +203,10 @@ final class LibraryStore: ObservableObject {
         state.log.append(LogEntry(date: Date(), event: event, trackID: trackID, detail: detail))
     }
 
-    func track(_ id: String) -> LibraryTrack? { library?.tracks.first { $0.id == id } }
+    func track(_ id: String) -> LibraryTrack? {
+        guard let i = trackIndex[id], let lib = library, i < lib.tracks.count else { return nil }
+        return lib.tracks[i]
+    }
 
     // MARK: Queries
 
@@ -204,8 +214,8 @@ final class LibraryStore: ObservableObject {
         guard let lib = library else { return [] }
         var tracks = lib.tracks
         if case .playlist(let name) = item, let p = lib.playlists.first(where: { $0.name == name }) {
-            let byID = Dictionary(lib.tracks.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-            tracks = p.trackIDs.compactMap { byID[$0] }
+            var seen = Set<String>()   // a playlist can list the same track twice; rows need unique ids
+            tracks = p.trackIDs.filter { seen.insert($0).inserted }.compactMap { track($0) }
         }
         var rows = tracks.map { t -> Row in
             let st = state.tracks[t.id]
@@ -311,10 +321,12 @@ final class LibraryStore: ObservableObject {
     }
 
     /// Called when a download lands in _inbox: match it, move it into Tracks/, record it.
-    func importDownloaded(_ file: URL, source: String) async -> String {
+    func importDownloaded(_ file: URL, source: String, trackID: String? = nil) async -> String {
         guard let lib = library else { return "no library loaded" }
         let rec = await readTrack(file)
-        let idx = Matcher(tracks: lib.tracks).match(rec) ?? pendingTrackID.flatMap { id in lib.tracks.firstIndex { $0.id == id } }
+        // Known target (slsk-sync names files after the track) → tags → the track being hunted on SoundCloud.
+        let idx = trackID.flatMap { trackIndex[$0] } ?? Matcher(tracks: lib.tracks).match(rec)
+            ?? (source == "soundcloud" ? pendingTrackID.flatMap { trackIndex[$0] } : nil)
         guard let i = idx else {
             log("unmatched download", nil, "\(file.lastPathComponent) kept in _inbox – no matching library track")
             save()
@@ -393,18 +405,40 @@ final class LibraryStore: ObservableObject {
             default: break
             }
         }
-        if let log = try? String(contentsOf: AppPaths.slskWorkDir.appendingPathComponent("sync.log"), encoding: .utf8) {
-            s.recent = Array(log.split(separator: "\n").suffix(40).reversed().map(String.init))
-        }
+        s.recent = Self.tail(AppPaths.slskWorkDir.appendingPathComponent("sync.log"), lines: 40).reversed()
         let cfg = (try? String(contentsOf: AppPaths.slskConfig, encoding: .utf8)) ?? ""
         s.configured = cfg.range(of: #"(?m)^username\s*=\s*"[^"]+""#, options: .regularExpression) != nil
             && cfg.range(of: #"(?m)^password\s*=\s*"[^"]+""#, options: .regularExpression) != nil
-        s.running = slskProcess?.isRunning ?? false
+        let holder = Self.syncLockHolder()
+        let own = slskProcess?.isRunning == true ? slskProcess?.processIdentifier : nil
+        if let holder, holder != own, holder > 0 { s.externalPID = holder }
+        s.running = own != nil || s.externalPID != nil
         soulseek = s
     }
 
+    /// Last `lines` lines of a text file, reading at most the final 64 KB (the sync log only grows).
+    nonisolated static func tail(_ url: URL, lines: Int) -> [String] {
+        guard let h = try? FileHandle(forReadingFrom: url) else { return [] }
+        defer { try? h.close() }
+        let end = (try? h.seekToEnd()) ?? 0
+        try? h.seek(toOffset: end > 65_536 ? end - 65_536 : 0)
+        let text = String(decoding: (try? h.readToEnd()) ?? Data(), as: UTF8.self)
+        return Array(text.split(separator: "\n").suffix(lines).map(String.init))
+    }
+
+    /// PID of the slsk-sync process holding _soulseek/sync.pid's lock, or nil if none is running.
+    nonisolated static func syncLockHolder() -> Int32? {
+        let path = AppPaths.slskWorkDir.appendingPathComponent("sync.pid").path
+        let fd = open(path, O_RDONLY)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        if flock(fd, LOCK_SH | LOCK_NB) == 0 { flock(fd, LOCK_UN); return nil }   // nobody holds it
+        let text = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+        return Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? -1
+    }
+
     func startSoulseek() {
-        guard slskProcess?.isRunning != true, FileManager.default.isExecutableFile(atPath: AppPaths.slskSync.path) else { return }
+        guard slskProcess?.isRunning != true, Self.syncLockHolder() == nil, FileManager.default.isExecutableFile(atPath: AppPaths.slskSync.path) else { return }
         let p = Process()
         p.executableURL = AppPaths.slskSync
         p.arguments = ["run"]
@@ -445,8 +479,8 @@ final class LibraryStore: ObservableObject {
     }
 
     func stopSoulseek() {
-        slskProcess?.terminate()
-        slskProcess = nil
+        slskProcess?.terminate()   // kept until it exits, so Start can't launch a second copy meanwhile
+        if let pid = soulseek.externalPID { kill(pid, SIGTERM) }
         log("soulseek", nil, "sync stopped")
         save()
         refreshSoulseek()
@@ -486,10 +520,15 @@ final class LibraryStore: ObservableObject {
         guard library != nil, busy == nil else { return }
         let files = (try? FileManager.default.contentsOfDirectory(at: Self.inboxDir, includingPropertiesForKeys: [.fileSizeKey],
                                                                  options: [.skipsHiddenFiles])) ?? []
+        guard let lib = library else { return }
+        // slsk-sync names each file "<track.fileName>.ext" (or "… (2).ext"), so the target track is known exactly.
+        let byFileName = Dictionary(lib.tracks.map { ($0.fileName, $0.id) }, uniquingKeysWith: { a, _ in a })
         for f in files where audioExtensions.contains(f.pathExtension.lowercased()) {
             let size = (try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             guard inboxSeen.insert("\(f.path)|\(size)").inserted else { continue }
-            _ = await importDownloaded(f, source: "soulseek")
+            let stem = f.deletingPathExtension().lastPathComponent
+            let base = stem.replacingOccurrences(of: #" \(\d+\)$"#, with: "", options: .regularExpression)
+            _ = await importDownloaded(f, source: "soulseek", trackID: byFileName[stem] ?? byFileName[base])
         }
     }
 }

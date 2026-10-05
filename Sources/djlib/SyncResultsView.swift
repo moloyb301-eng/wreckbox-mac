@@ -42,7 +42,7 @@ struct SyncResultsView: View {
                 .frame(maxWidth: 220)
                 .background(Capsule().fill(Theme.glassFill).overlay(Capsule().strokeBorder(Theme.hairline)))
             }
-            if !s.running && !s.overrides.isEmpty && tab != .done {
+            if !s.running && items.contains(where: { pendingRetry($0.row.id, $0.record, s) != nil }) {
                 Text("Retries run when Soulseek sync is running.").font(Theme.ui(12)).foregroundStyle(Theme.peach)
             }
             Scroller {
@@ -51,7 +51,8 @@ struct SyncResultsView: View {
                         Text(emptyText).font(Theme.ui(13)).foregroundStyle(Theme.text3).padding(30)
                     }
                     ForEach(items, id: \.row.id) { e in
-                        ResultRow(row: e.row, record: e.record, pending: s.overrides[e.row.id], customSearch: { customFor = e.row })
+                        ResultRow(row: e.row, record: e.record, pending: pendingRetry(e.row.id, e.record, s),
+                                  customSearch: { customFor = e.row })
                     }
                 }
                 .padding(6)
@@ -62,6 +63,12 @@ struct SyncResultsView: View {
         .sheet(item: Binding(get: { customFor.map(IdentifiedRow.init) }, set: { customFor = $0?.row })) { r in
             CustomSearchSheet(row: r.row) { q in store.retrySync([r.row.id], query: q); customFor = nil } cancel: { customFor = nil }
         }
+    }
+
+    /// A retry request the sync hasn't acted on yet (requested after the last attempt).
+    private func pendingRetry(_ id: String, _ rec: SyncRecord, _ s: SoulseekStatus) -> [String: String]? {
+        guard let o = s.overrides[id], (o["retryAt"] ?? "") > rec.lastTry else { return nil }
+        return o
     }
 
     private var emptyText: String {

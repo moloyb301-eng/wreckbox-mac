@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as dt
+import fcntl
 import json
 import logging
 import os
@@ -140,8 +141,8 @@ def missing_tracks(cfg: dict, sync: dict) -> list[dict]:
     queue = load_json(WORK_DIR / "queue.json", None)
     if queue and queue.get("ids"):
         rank = {tid: i for i, tid in enumerate(queue["ids"])}
-        if queue.get("onlyPriority"):
-            out = [t for t in out if t["id"] in rank]
+        if queue.get("onlyPriority"):   # explicit retries still run, even outside the priorities
+            out = [t for t in out if t["id"] in rank or t["id"] in retried]
         out.sort(key=lambda t: rank.get(t["id"], len(rank)))   # stable: unranked keep newest-first
     out.sort(key=lambda t: t["id"] not in retried)               # explicit retries go first
     return out
@@ -234,7 +235,8 @@ def file_matches(track: dict, path: str, duration: int | None, tol: int) -> bool
     return True
 
 
-def rank(track: dict, results, cfg: dict, loose: bool = False) -> list[Candidate]:
+def rank(track: dict, results, cfg: dict, loose: str | None = None) -> list[Candidate]:
+    """`loose` = a custom query: its words must appear in the file path instead of the usual title/artist check."""
     s = cfg["sync"]
     cands: list[Candidate] = []
     for r in results:
@@ -249,6 +251,9 @@ def rank(track: dict, results, cfg: dict, loose: bool = False) -> list[Candidate
             if q is None or f.filesize < 500_000:
                 continue
             if loose:
+                hay = norm(" ".join(f.filename.replace("\\", "/").split("/")[-3:])).split()
+                if not all(w in hay for w in norm(loose).split()):
+                    continue
                 if duration and track.get("durationMs") and abs(duration - track["durationMs"] / 1000) > s["duration_tolerance_seconds"] * 3:
                     continue
             elif not file_matches(track, f.filename, duration, s["duration_tolerance_seconds"]):
@@ -268,6 +273,31 @@ def rank(track: dict, results, cfg: dict, loose: bool = False) -> list[Candidate
 # ── Soulseek client ──────────────────────────────────────────────────────────
 
 
+_lock_file = None
+
+
+def acquire_lock() -> None:
+    """Only one slsk-sync at a time: hold an exclusive lock on _soulseek/sync.pid (the app reads it too)."""
+    global _lock_file
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    _lock_file = open(WORK_DIR / "sync.pid", "a+")
+    try:
+        fcntl.flock(_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        _lock_file.seek(0)
+        fail(f"slsk-sync is already running (pid {_lock_file.read().strip() or '?'}) — not starting a second copy.")
+    _lock_file.seek(0)
+    _lock_file.truncate()
+    _lock_file.write(str(os.getpid()))
+    _lock_file.flush()
+
+
+def fail(message: str) -> None:
+    """Log a fatal problem (so the app's Soulseek page shows it) and exit."""
+    log.error("✗ %s", message)
+    raise SystemExit(message)
+
+
 class Syncer:
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -279,8 +309,13 @@ class Syncer:
     async def connect(self) -> None:
         ss = self.cfg["soulseek"]
         if not ss["username"] or not ss["password"]:
-            raise SystemExit(f"Add your Soulseek username and password to {CONFIG_FILE}")
+            fail(f"Add your Soulseek username and password to {CONFIG_FILE}")
+        acquire_lock()
         INCOMING.mkdir(parents=True, exist_ok=True)
+        # Partial files left by a crash or a forced quit; no transfer is active yet, so they're safe to drop.
+        for p in INCOMING.rglob("*"):
+            if p.is_file():
+                p.unlink(missing_ok=True)
         INBOX.mkdir(parents=True, exist_ok=True)
         settings = Settings(credentials=CredentialsSettings(username=ss["username"], password=ss["password"]))
         settings.shares.download = str(INCOMING)
@@ -296,7 +331,8 @@ class Syncer:
             await self.client.login()
         except AuthenticationError as e:
             await self.client.stop()
-            raise SystemExit(f"Soulseek login failed: {e}. Check the username/password in {CONFIG_FILE}")
+            fail(f"Soulseek login failed: {e}. Check the username/password in {CONFIG_FILE} "
+                 "(a new username is created on first login; if it's taken by someone else, pick another).")
         log.info("Logged in to Soulseek as %s", ss["username"])
 
     async def close(self) -> None:
@@ -330,7 +366,7 @@ class Syncer:
             info["filesSeen"] += sum(len(r.shared_items) for r in results)
             info["usersSeen"] += len(results)
             # A custom query is the user's own wording: trust it for the title/artist check, keep the quality rules.
-            cands = rank(track, results, self.cfg, loose=custom and len(info["queries"]) == 1)
+            cands = rank(track, results, self.cfg, loose=q if custom and len(info["queries"]) == 1 else None)
             if cands:
                 return cands, info
         return [], info
@@ -352,6 +388,7 @@ class Syncer:
                     break
                 if st in (TransferState.FAILED, TransferState.ABORTED):
                     log.info("  ✗ %s: %s", c.username, transfer.fail_reason or transfer.abort_reason or st.name.lower())
+                    await self._discard(transfer)   # drop the partial file and the transfer entry
                     return None
                 if st == TransferState.DOWNLOADING or transfer.bytes_transfered:
                     if transfer.bytes_transfered > last_bytes:
