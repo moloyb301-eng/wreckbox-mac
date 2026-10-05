@@ -20,6 +20,7 @@ struct DJApp: App {
     @StateObject private var store = LibraryStore()
     @StateObject private var browser = SoundCloudBrowser()
     @StateObject private var phoneSync = PhoneSyncServer()
+    @StateObject private var updater = Updater()
 
     init() {
         NSApplication.shared.setActivationPolicy(.regular)
@@ -34,7 +35,8 @@ struct DJApp: App {
                 .environmentObject(store)
                 .environmentObject(browser)
                 .environmentObject(phoneSync)
-                .onAppear { browser.store = store; phoneSync.store = store; store.startInboxWatcher(); store.refreshSoulseek() }
+                .environmentObject(updater)
+                .onAppear { browser.store = store; phoneSync.store = store; store.startInboxWatcher(); store.refreshSoulseek(); updater.start() }
                 .frame(minWidth: 980, minHeight: 620)
                 .preferredColorScheme(.dark)
         }
@@ -85,6 +87,7 @@ struct ContentView: View {
         }
         .frame(width: g.size.width, height: g.size.height)
         .background(AmbientBackground(row: focused))
+        .overlay(alignment: .bottomLeading) { UpdateBanner().padding(.leading, 252) }
         .animation(.spring(response: 0.35, dampingFraction: 0.9), value: store.focus)
         }
         .foregroundStyle(Theme.text)
