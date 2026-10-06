@@ -19,6 +19,8 @@ enum AccountAPI {
         set { UserDefaults.standard.set(newValue, forKey: "accountEmail") }
     }
     static var signedIn: Bool { token != nil }
+    /// Google sign-in needs a Google OAuth client on the account service; off until one is set up.
+    static let googleEnabled = false
 
     static var deviceID: String {
         if let d = UserDefaults.standard.string(forKey: "accountDeviceID") { return d }
@@ -100,6 +102,13 @@ enum AccountAPI {
         try await call("POST", "v1/devices", body: jsonBody(body))
     }
 
+    /// A one-time code (10 min) that signs a phone in to this account when it scans the QR code.
+    static func startLink() async throws -> String {
+        let j = try await call("POST", "v1/link/start")
+        guard let code = j["code"] as? String else { throw Failure(message: "Couldn't make a sign-in code.") }
+        return code
+    }
+
     /// Requests phones queued in the account while this Mac was offline (handed out once).
     static func takeQueuedRequests() async throws -> [[String: Any]] {
         var c = URLComponents(url: base.appendingPathComponent("v1/requests"), resolvingAgainstBaseURL: false)!
@@ -151,7 +160,20 @@ enum AccountAPI {
 /// "Use from anywhere": keeps a Cloudflare quick tunnel to the phone-sync server and registers its address.
 @MainActor
 final class RemoteAccess: ObservableObject {
-    @Published var status = "Off"
+    @Published var status = "Off" { didSet { Self.log(status) } }
+
+    /// "Use from anywhere" events, for diagnosing connection problems: ~/Library/Logs/WreckBox.log
+    nonisolated static func log(_ line: String) {
+        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/WreckBox.log")
+        let text = "\(ISO8601DateFormatter().string(from: Date())) remote: \(line)\n"
+        if let h = try? FileHandle(forWritingTo: url) {
+            h.seekToEndOfFile()
+            h.write(Data(text.utf8))
+            try? h.close()
+        } else {
+            try? text.write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
     @Published var url: String?
     @Published var signedIn = AccountAPI.signedIn
     private var proc: Process?
@@ -167,7 +189,10 @@ final class RemoteAccess: ObservableObject {
     var enabled: Bool { UserDefaults.standard.bool(forKey: "useFromAnywhere") }
 
     /// Restores "Use from anywhere" after a restart.
-    func resume() { if enabled && AccountAPI.signedIn { start() } }
+    func resume() {
+        Self.log("resume: enabled=\(enabled) signedIn=\(AccountAPI.signedIn)")
+        if enabled && AccountAPI.signedIn { start() }
+    }
 
     func start() {
         wanted = true
@@ -178,6 +203,12 @@ final class RemoteAccess: ObservableObject {
         Task {
             do {
                 try await ensureBinary()
+                // A tunnel left behind by an earlier run (e.g. the app was force-quit) would keep an old address alive.
+                let stale = Process()
+                stale.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+                stale.arguments = ["-f", Self.binary.path]
+                try? stale.run()
+                stale.waitUntilExit()
                 status = "Connecting…"
                 let p = Process()
                 p.executableURL = Self.binary
@@ -303,18 +334,20 @@ struct AccountPanel: View {
                             busy = false
                         }
                     }
-                    PillButton(label: "Continue with Google", icon: "g.circle", style: .glass) {
-                        guard !busy else { return }
-                        busy = true
-                        message = nil
-                        Task {
-                            do {
-                                try await AccountAPI.signInWithGoogle()
-                                remote.signedIn = true
-                            } catch {
-                                if (error as? ASWebAuthenticationSessionError)?.code != .canceledLogin { message = error.localizedDescription }
+                    if AccountAPI.googleEnabled {
+                        PillButton(label: "Continue with Google", icon: "g.circle", style: .glass) {
+                            guard !busy else { return }
+                            busy = true
+                            message = nil
+                            Task {
+                                do {
+                                    try await AccountAPI.signInWithGoogle()
+                                    remote.signedIn = true
+                                } catch {
+                                    if (error as? ASWebAuthenticationSessionError)?.code != .canceledLogin { message = error.localizedDescription }
+                                }
+                                busy = false
                             }
-                            busy = false
                         }
                     }
                     Button(creating ? "I have an account" : "Create an account") { creating.toggle() }

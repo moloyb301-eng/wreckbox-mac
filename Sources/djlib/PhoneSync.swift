@@ -534,10 +534,22 @@ import SwiftUI
 struct PhoneSyncView: View {
     @EnvironmentObject var store: LibraryStore
     @EnvironmentObject var server: PhoneSyncServer
+    @EnvironmentObject var remote: RemoteAccess
     @State private var copied = false
+    /// One-time sign-in code in the QR code while this Mac is signed in (renewed before it runs out).
+    @State private var linkCode: String?
+    private let renew = Timer.publish(every: 480, on: .main, in: .common).autoconnect()
+
+    /// `signedIn` is passed in when it changes: @Published sends the new value before the property holds it.
+    private func refreshLink(signedIn: Bool? = nil) {
+        guard signedIn ?? remote.signedIn else { linkCode = nil; return }
+        Task { linkCode = try? await AccountAPI.startLink() }
+    }
 
     var body: some View {
-        let uri = server.pairingURI
+        // Scanning this pairs on the same Wi-Fi, and — when this Mac is signed in — also signs the phone in to the
+        // account and connects it to this Mac from anywhere.
+        let uri = server.pairingURI + (linkCode.map { "&link=\($0)&computer=\(AccountAPI.deviceID)" } ?? "")
         VStack(alignment: .leading, spacing: 16) {
             PageHeader(eyebrow: "Tools", title: "Sync to phone",
                        subtitle: "Send tracks from this Mac to the WreckBox phone app over your Wi-Fi") {
@@ -560,9 +572,14 @@ struct PhoneSyncView: View {
                 }
                 VStack(alignment: .leading, spacing: 10) {
                     Text("On your phone").font(Theme.ui(18, .semibold))
-                    ForEach(Array(["Connect the phone to the same Wi-Fi as this Mac.",
-                                   "Open WreckBox → Computer → Scan pairing code.",
-                                   "Pick playlists and tap Download, or tap a cover to stream it."].enumerated()), id: \.offset) { i, s in
+                    ForEach(Array((linkCode != nil
+                                   ? ["Open WreckBox on the phone → Computer → Scan pairing code.",
+                                      "That's it: the phone is signed in to your account and connected to this Mac — at home or on mobile data.",
+                                      "Tap a cover to stream, or pick playlists and tap Download."]
+                                   : ["Connect the phone to the same Wi-Fi as this Mac.",
+                                      "Open WreckBox → Computer → Scan pairing code.",
+                                      "Pick playlists and tap Download, or tap a cover to stream it.",
+                                      "Sign in below so the code also signs the phone in and works away from home."]).enumerated()), id: \.offset) { i, s in
                         HStack(alignment: .firstTextBaseline, spacing: 10) {
                             Text("\(i + 1)").font(Theme.dot(15)).foregroundStyle(Theme.lilac)
                             Text(s).font(Theme.ui(13)).foregroundStyle(Theme.text2)
@@ -596,5 +613,7 @@ struct PhoneSyncView: View {
         }
         .padding(.horizontal, 22).padding(.top, 34).padding(.bottom, 10)
         .onReceive(store.$state) { _ in if server.running { server.refreshCrate() } }
+        .onReceive(renew) { _ in refreshLink() }
+        .onReceive(remote.$signedIn) { refreshLink(signedIn: $0) }   // also fires when the page opens
     }
 }
