@@ -94,3 +94,108 @@ extension LibraryStore {
         if !youtube.running { startYouTubeFill() }
     }
 }
+
+import SwiftUI
+
+/// Home / YouTube page tile: what YouTube fill is doing.
+struct YouTubeTile: View {
+    @EnvironmentObject var store: LibraryStore
+
+    var body: some View {
+        let y = store.youtube
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "play.rectangle.fill").font(.system(size: 17, weight: .regular)).foregroundStyle(Theme.smart)
+                    .frame(width: 22, alignment: .leading)
+                DotLabel("YouTube", color: Theme.text)
+                Spacer()
+                PillButton(label: y.running ? "Turn off" : "Turn on", icon: y.running ? "stop.fill" : "play.fill", style: y.running ? .glass : .smart) {
+                    y.running ? store.stopYouTubeFill() : store.startYouTubeFill()
+                }
+                .help("Get tracks Soulseek can't find from YouTube Music — official audio only, in your Premium quality")
+            }
+            Text(YouTubeTile.statusLine(y)).font(Theme.ui(12.5)).foregroundStyle(Theme.text2).lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 22) {
+                SyncCounter(label: "Got", n: y.done)
+                SyncCounter(label: "Not on YouTube", n: y.notFound)
+                SyncCounter(label: "Failed", n: y.failed)
+            }
+        }
+        .padding(16)
+        .smartGlass(Theme.Radius.tile)
+    }
+
+    static func statusLine(_ y: YouTubeStatus) -> String {
+        guard y.running else { return "Off. Fills what Soulseek can't find from YouTube Music — official audio, Premium quality." }
+        guard let last = y.recent.first else { return "Starting…" }
+        let text = String(last.dropFirst(20))
+        if text.hasPrefix("⏸") { return "Waiting for your YouTube login — allow the keychain prompt (Chrome Safe Storage)." }
+        return text
+    }
+}
+
+struct SyncCounter: View {
+    let label: String
+    let n: Int
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("\(n)").font(Theme.dot(20)).monospacedDigit()
+            DotLabel(label, size: 9)
+        }
+    }
+}
+
+/// Full YouTube page: status, switch, how it works, live log.
+struct YouTubeView: View {
+    @EnvironmentObject var store: LibraryStore
+
+    var body: some View {
+        let y = store.youtube
+        VStack(alignment: .leading, spacing: 16) {
+            PageHeader(eyebrow: "Sources", title: "YouTube",
+                       subtitle: y.running ? "On — fills tracks Soulseek couldn't find, every 30 minutes" : "Off") {
+                PillButton(label: y.running ? "Turn off" : "Turn on", icon: y.running ? "stop.fill" : "play.fill", style: y.running ? .glass : .smart) {
+                    y.running ? store.stopYouTubeFill() : store.startYouTubeFill()
+                }
+            }
+            YouTubeTile()
+            VStack(alignment: .leading, spacing: 8) {
+                DotLabel("How it works", color: Theme.text)
+                Text("Only tracks Soulseek already tried and couldn't get. Only the artist's official audio on YouTube Music — never music videos — with matching title, artist and length. Your Premium login (from Chrome) gives Opus at ~260–330 kbps, saved as FLAC so Rekordbox can read it without a second lossy encode. Without the login it waits instead of downloading in lower quality.")
+                    .font(Theme.ui(12.5)).foregroundStyle(Theme.text2).fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(18)
+            .glass(Theme.Radius.tile)
+            LogPanel(lines: y.recent)
+        }
+        .padding(.horizontal, 22).padding(.top, 34).padding(.bottom, 10)
+    }
+}
+
+/// The scrolling log used by the Soulseek and YouTube pages.
+struct LogPanel: View {
+    let lines: [String]
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            DotLabel("Log")
+            Scroller {
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    if lines.isEmpty { Text("No activity yet.").foregroundStyle(Theme.text3) }
+                    ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                        Text(line).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(color(line)).textSelection(.enabled)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(18)
+        .glass(Theme.Radius.card)
+    }
+
+    private func color(_ line: String) -> Color {
+        if line.contains("✓") { return Theme.lilac }
+        if line.contains("✗") || line.contains("failed") || line.contains("⏸") { return Theme.peach }
+        return Theme.text2
+    }
+}

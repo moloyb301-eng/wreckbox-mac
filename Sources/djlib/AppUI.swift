@@ -77,6 +77,7 @@ struct ContentView: View {
                         case .home, nil: HomeView()
                         case .soundcloud: SoundCloudView()
                         case .soulseek: SoulseekView()
+                        case .youtube: YouTubeView()
                         case .queue: QueueView()
                         case .results: SyncResultsView()
                         case .phone: PhoneSyncView()
@@ -183,6 +184,7 @@ struct Sidebar: View {
                 Text("WRECKBOX").font(Theme.dot(17)).tracking(2)
             }
             .padding(.horizontal, 18).padding(.top, 40).padding(.bottom, 18)
+            SyncBox().padding(.horizontal, 8).padding(.bottom, 10)
 
             Scroller(indicators: false) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -216,13 +218,16 @@ struct Sidebar: View {
                         }
                     }
 
+                    section("Sources")
+                    SideItem(item: .soulseek, title: "Soulseek", icon: "arrow.down.to.line", count: store.soulseek.done, live: store.soulseek.running)
+                    SideItem(item: .youtube, title: "YouTube", icon: "play.rectangle", count: store.youtube.done, live: store.youtube.running)
+                    SideItem(item: .soundcloud, title: "SoundCloud", icon: "cloud")
+
                     section("Tools")
                     SideItem(item: .queue, title: "Download queue", icon: "list.number", count: store.priorities.isEmpty ? nil : store.priorities.count)
-                    SideItem(item: .soulseek, title: "Soulseek sync", icon: "arrow.down.circle", live: store.soulseek.running)
                     SideItem(item: .phone, title: "Sync to phone", icon: "iphone.radiowaves.left.and.right")
                     SideItem(item: .results, title: "Sync results", icon: "checklist",
                              count: store.soulseek.notFound + store.soulseek.failed == 0 ? nil : store.soulseek.notFound + store.soulseek.failed)
-                    SideItem(item: .soundcloud, title: "SoundCloud", icon: "cloud")
                     SideItem(item: .log, title: "Activity", icon: "clock.arrow.circlepath")
                 }
                 .padding(.horizontal, 8).padding(.bottom, 16)
@@ -247,22 +252,34 @@ struct SideItem: View {
     var live = false
     @State private var hovering = false
 
+    /// Fixed columns, so every row's icon, progress and count line up exactly:
+    /// [icon 18] 10 [title …] [indicator 12] 8 [count 40, right-aligned]
+    static let iconWidth: CGFloat = 18, indicatorWidth: CGFloat = 12, countWidth: CGFloat = 40
+
     var body: some View {
         let selected = store.sidebar == item
         Button { store.sidebar = item } label: {
-            HStack(spacing: 10) {
-                Image(systemName: icon).font(.system(size: 13, weight: .medium)).frame(width: 18)
+            HStack(spacing: 0) {
+                // Every symbol scaled into the same 15×14 box, so wide ones (person.2) don't stick out.
+                Image(systemName: icon).resizable().scaledToFit().fontWeight(.medium)
+                    .frame(width: 15, height: 14)
+                    .frame(width: Self.iconWidth, alignment: .center)
                     .foregroundStyle(selected ? Theme.text : Theme.text3)
                 Text(title).font(Theme.ui(13.5, selected ? .semibold : .medium)).lineLimit(1)
                     .foregroundStyle(selected ? Theme.text : Theme.text2)
-                Spacer(minLength: 4)
-                if live { Circle().fill(Theme.smart).frame(width: 7, height: 7) }
-                if let progress, progress > 0 {
-                    Circle().trim(from: 0, to: progress).stroke(Theme.lilac, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                        .rotationEffect(.degrees(-90)).frame(width: 10, height: 10)
-                        .background(Circle().stroke(Theme.hairline, lineWidth: 2))
+                    .padding(.leading, 10)
+                Spacer(minLength: 6)
+                Group {
+                    if live {
+                        Circle().fill(Theme.smart).frame(width: 6, height: 6)
+                    } else if let progress {
+                        DotGrid(progress: progress)
+                    }
                 }
-                if let count { Text("\(count)").font(Theme.dot(11)).foregroundStyle(Theme.text3) }
+                .frame(width: Self.indicatorWidth, height: Self.indicatorWidth, alignment: .center)
+                Text(count.map { $0.formatted() } ?? "")
+                    .font(Theme.dot(11)).monospacedDigit().foregroundStyle(Theme.text3).lineLimit(1)
+                    .frame(width: Self.countWidth, alignment: .trailing)
             }
             .padding(.horizontal, 10).padding(.vertical, 7)
             .background {
@@ -276,9 +293,34 @@ struct SideItem: View {
     }
 }
 
+/// Download progress as a 3×3 grid of dots: one more turns white for every 10 % of the tracks in your crate
+/// (all nine at 90 % and up). Dots fill row by row from the top left.
+struct DotGrid: View {
+    var progress: Double
+    var dot: CGFloat = 3
+    var gap: CGFloat = 1.5
+
+    var body: some View {
+        let lit = min(9, max(0, Int((progress * 10).rounded(.down))))
+        VStack(spacing: gap) {
+            ForEach(0..<3, id: \.self) { r in
+                HStack(spacing: gap) {
+                    ForEach(0..<3, id: \.self) { c in
+                        Circle()
+                            .fill(r * 3 + c < lit ? Color.white.opacity(0.95) : Color.white.opacity(0.18))
+                            .frame(width: dot, height: dot)
+                    }
+                }
+            }
+        }
+        .frame(width: dot * 3 + gap * 2, height: dot * 3 + gap * 2)
+        .help("\(Int((progress * 100).rounded())) % in your crate")
+    }
+}
+
 // MARK: - Track list
 
-enum SortKey: String { case none, title, artist, bpm, key, energy, genre, time, status, added }
+enum SortKey: String { case none, title, artist, bpm, key, energy, genre, time, quality, status, added }
 
 struct TrackListView: View {
     @EnvironmentObject var store: LibraryStore
@@ -375,6 +417,11 @@ struct TrackListView: View {
         case .energy: return by(\.energyValue)
         case .genre: return by { $0.genre }
         case .time: return by { $0.track.durationMs ?? 0 }
+        // Lossless first, then by bit rate; tracks without a file last.
+        case .quality: return by { r -> Int in
+            guard let q = r.state?.localPath.flatMap({ store.quality[$0] }) else { return ascending ? Int.max : -1 }
+            return q.lossless && !q.fromYouTube ? -2000 : -(q.kbps ?? 0)
+        }
         case .status: return by { $0.status.rawValue }
         case .added: return by(\.addedValue)
         }
@@ -420,7 +467,8 @@ func findOnSoundCloud(store: LibraryStore, browser: SoundCloudBrowser, id: Strin
 struct ColumnFit: Equatable {
     var energy = true
     var genre = true
-    init(width: CGFloat = 2000) { genre = width >= 880; energy = width >= 720 }
+    var quality = true
+    init(width: CGFloat = 2000) { genre = width >= 940; energy = width >= 780; quality = width >= 640 }
 }
 
 private struct ColumnFitKey: EnvironmentKey { static let defaultValue = ColumnFit() }
@@ -433,7 +481,7 @@ extension EnvironmentValues {
 
 /// Column widths shared by the header and rows.
 enum Col {
-    static let art: CGFloat = 40, bpm: CGFloat = 60, key: CGFloat = 66, energy: CGFloat = 56, genre: CGFloat = 130, time: CGFloat = 46, status: CGFloat = 26
+    static let art: CGFloat = 40, bpm: CGFloat = 60, key: CGFloat = 66, energy: CGFloat = 56, genre: CGFloat = 130, quality: CGFloat = 72, time: CGFloat = 46, status: CGFloat = 26
 }
 
 struct ColumnHeader: View {
@@ -449,6 +497,7 @@ struct ColumnHeader: View {
             head("Key", .key).frame(width: Col.key, alignment: .leading)
             if fit.energy { head("Energy", .energy).frame(width: Col.energy, alignment: .leading) }
             if fit.genre { head("Genre", .genre).frame(width: Col.genre, alignment: .leading) }
+            if fit.quality { head("Quality", .quality).frame(width: Col.quality, alignment: .leading) }
             head("Time", .time).frame(width: Col.time, alignment: .trailing)
             head("", .status).frame(width: Col.status)
         }
@@ -472,6 +521,7 @@ struct ColumnHeader: View {
 
 struct TrackRowView: View {
     @Environment(\.columnFit) private var fit
+    @EnvironmentObject var store: LibraryStore
     let row: Row
     let selected: Bool
     let focused: Bool
@@ -492,6 +542,13 @@ struct TrackRowView: View {
             if fit.genre {
                 Text(row.genre).font(Theme.ui(12)).foregroundStyle(row.genreUnsure ? Theme.text3 : Theme.text2).lineLimit(1)
                     .frame(width: Col.genre, alignment: .leading).help(row.genreHelp)
+            }
+            if fit.quality {
+                let q = row.state?.localPath.flatMap { store.quality[$0] }
+                Text(q?.label ?? (row.status == .downloaded ? "…" : ""))
+                    .font(Theme.dot(11.5)).monospacedDigit().foregroundStyle(q?.color ?? Theme.text3).lineLimit(1)
+                    .frame(width: Col.quality, alignment: .leading)
+                    .help(q?.detail ?? "")
             }
             Text(row.durationText).font(Theme.dot(12)).foregroundStyle(Theme.text3).frame(width: Col.time, alignment: .trailing)
             StatusDot(status: row.status).frame(width: Col.status).help(row.state?.localPath ?? row.statusText)

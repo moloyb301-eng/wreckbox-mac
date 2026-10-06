@@ -6,17 +6,20 @@ import SwiftUI
 
 @MainActor
 enum Snapshot {
-    static func run(args: [String]) {
+    static func run(args: [String]) async {
         let out = URL(fileURLWithPath: args.first ?? "snapshots")
         try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
         Theme.registerFonts()
         let store = LibraryStore()
         let browser = SoundCloudBrowser()
+        store.refreshSoulseek()
+        store.refreshYouTube()
+        await store.refreshQuality()
         let firstWithFile = store.library?.tracks.first { store.state.tracks[$0.id]?.status == .downloaded }?.id
         let screens: [(String, SidebarItem, String?)] = [
             ("narrow-all-tracks", .all, firstWithFile), ("results", .results, nil),
             ("home", .home, nil), ("all-tracks", .all, firstWithFile), ("playlist", .playlist(store.library?.playlists.first?.name ?? ""), nil),
-            ("soulseek", .soulseek, nil), ("files", .files, nil), ("queue", .queue, nil),
+            ("soulseek", .soulseek, nil), ("youtube", .youtube, nil), ("files", .files, nil), ("queue", .queue, nil),
         ]
         for (name, item, focus) in screens {
             store.sidebar = item

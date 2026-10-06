@@ -48,7 +48,7 @@ struct AppState: Codable {
 }
 
 enum SidebarItem: Hashable {
-    case home, all, missing, downloaded, ignored, files, playlist(String), genre(String), log, soundcloud, soulseek, queue, results, phone
+    case home, all, missing, downloaded, ignored, files, playlist(String), genre(String), log, soundcloud, soulseek, youtube, queue, results, phone
 }
 
 /// One track's entry in _soulseek/sync.json (written by slsk-sync).
@@ -397,6 +397,7 @@ final class LibraryStore: ObservableObject {
                 self?.refreshSoulseek()
                 self?.refreshYouTube()
                 self?.reloadLibraryIfChanged()
+                await self?.refreshQuality()
                 try? await Task.sleep(for: .seconds(15))
             }
         }
@@ -411,6 +412,8 @@ final class LibraryStore: ObservableObject {
 
     @Published var soulseek = SoulseekStatus()
     @Published var youtube = YouTubeStatus()
+    /// File path → format / bit rate, for the Quality column (see Quality.swift).
+    @Published var quality: [String: FileQuality] = [:]
     /// The yt-fill process this app started (static so the app delegate can stop it on quit).
     nonisolated(unsafe) static var ytProcess: Process?
     /// The sync process this app started (static so the app delegate can stop it on quit).

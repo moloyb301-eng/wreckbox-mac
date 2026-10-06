@@ -26,7 +26,12 @@ struct HomeView: View {
                 }
                 .fixedSize(horizontal: false, vertical: true)
 
-                SoulseekTile()
+                // One tile per source, side by side.
+                HStack(alignment: .top, spacing: 12) {
+                    SoulseekTile(compact: true).frame(maxWidth: .infinity)
+                    YouTubeTile().frame(maxWidth: .infinity)
+                }
+                .fixedSize(horizontal: false, vertical: true)
 
                 section("Recently added", action: ("See all", { store.sidebar = .all })) {
                     Scroller(axis: .horizontal, indicators: false) {
@@ -145,35 +150,20 @@ struct SoulseekTile: View {
         if compact {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Image(systemName: s.running ? "arrow.down.circle.fill" : "arrow.down.circle")
-                        .font(.system(size: 20, weight: .light)).foregroundStyle(Theme.smart)
-                    DotLabel("Soulseek sync", color: Theme.text)
+                    Image(systemName: "arrow.down.to.line").font(.system(size: 17, weight: .regular)).foregroundStyle(Theme.smart)
+                        .frame(width: 22, alignment: .leading)
+                    DotLabel("Soulseek", color: Theme.text)
                     Spacer()
                     button(s)
                 }
                 Text(statusLine(s)).font(Theme.ui(12.5)).foregroundStyle(Theme.text2).lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 HStack(spacing: 22) { counter("Got", s.done); counter("Not found", s.notFound); counter("Failed", s.failed) }
-                youtubeLine
             }
             .padding(16)
             .smartGlass(Theme.Radius.tile)
         } else {
             wide(s)
-        }
-    }
-
-    /// What Soulseek couldn't find comes from YouTube Music (official audio, Premium quality).
-    private var youtubeLine: some View {
-        let y = store.youtube
-        return HStack(spacing: 10) {
-            Image(systemName: "play.rectangle").foregroundStyle(Theme.lilac)
-            Text(y.running ? "YouTube fill on · \(y.done) got · \(y.notFound) not on YouTube" : "YouTube fill off · \(y.done) got")
-                .font(Theme.ui(12)).foregroundStyle(Theme.text2).lineLimit(1)
-            Spacer()
-            PillButton(label: y.running ? "Turn off" : "Turn on", icon: y.running ? "stop.fill" : "play.fill", style: y.running ? .glass : .smart) {
-                y.running ? store.stopYouTubeFill() : store.startYouTubeFill()
-            }
-            .help("Get tracks Soulseek can't find from YouTube Music — official audio only, in your Premium quality")
         }
     }
 
@@ -189,12 +179,11 @@ struct SoulseekTile: View {
 
     private func wide(_ s: SoulseekStatus) -> some View {
         HStack(alignment: .center, spacing: 18) {
-            Image(systemName: s.running ? "arrow.down.circle.fill" : "arrow.down.circle")
-                .font(.system(size: 30, weight: .light)).foregroundStyle(Theme.smart)
+            Image(systemName: "arrow.down.to.line").font(.system(size: 24, weight: .regular)).foregroundStyle(Theme.smart)
+                .frame(width: 30)
             VStack(alignment: .leading, spacing: 4) {
-                DotLabel("Soulseek sync", color: Theme.text)
+                DotLabel("Soulseek", color: Theme.text)
                 Text(statusLine(s)).font(Theme.ui(13)).foregroundStyle(Theme.text2).lineLimit(2)
-                youtubeLine.frame(maxWidth: 420)
             }
             Spacer()
             HStack(spacing: 18) {
@@ -214,12 +203,7 @@ struct SoulseekTile: View {
         return "Downloads missing tracks in the best format available and files them into your crate."
     }
 
-    private func counter(_ label: String, _ n: Int) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("\(n)").font(Theme.dot(20))
-            DotLabel(label, size: 9)
-        }
-    }
+    private func counter(_ label: String, _ n: Int) -> some View { SyncCounter(label: label, n: n) }
 }
 
 /// Full Soulseek page: status, start/stop, setup help and the live log.
@@ -229,7 +213,7 @@ struct SoulseekView: View {
     var body: some View {
         let s = store.soulseek
         VStack(alignment: .leading, spacing: 16) {
-            PageHeader(eyebrow: "Tools", title: "Soulseek sync",
+            PageHeader(eyebrow: "Sources", title: "Soulseek",
                        subtitle: s.running ? "Running — checks your playlists again every 30 minutes" : "Stopped") {
                 if s.configured {
                     PillButton(label: s.running ? "Stop" : "Start sync", icon: s.running ? "stop.fill" : "play.fill", style: s.running ? .glass : .smart) {
@@ -251,27 +235,8 @@ struct SoulseekView: View {
                 .padding(18)
                 .glass(Theme.Radius.tile)
             }
-            VStack(alignment: .leading, spacing: 10) {
-                DotLabel("Log")
-                Scroller {
-                    LazyVStack(alignment: .leading, spacing: 4) {
-                        if s.recent.isEmpty { Text("No activity yet.").foregroundStyle(Theme.text3) }
-                        ForEach(Array(s.recent.enumerated()), id: \.offset) { _, line in
-                            Text(line).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(color(line)).textSelection(.enabled)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-            .padding(18)
-            .glass(Theme.Radius.card)
+            LogPanel(lines: s.recent)
         }
         .padding(.horizontal, 22).padding(.top, 34).padding(.bottom, 10)
-    }
-
-    private func color(_ line: String) -> Color {
-        if line.contains("✓") { return Theme.lilac }
-        if line.contains("✗") || line.contains("failed") { return Theme.peach }
-        return Theme.text2
     }
 }
