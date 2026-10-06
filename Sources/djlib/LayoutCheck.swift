@@ -16,7 +16,8 @@ enum LayoutCheck {
         for page in pages {
         store.sidebar = page
         store.focus = focus
-        let host = NSHostingView(rootView: ContentView().environmentObject(store).environmentObject(SoundCloudBrowser()))
+        let host = NSHostingView(rootView: ContentView().environmentObject(store).environmentObject(SoundCloudBrowser())
+            .environmentObject(PhoneSyncServer()).environmentObject(Updater()).environmentObject(RemoteAccess()))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: w, height: h), styleMask: [.titled, .resizable, .fullSizeContentView],
                               backing: .buffered, defer: false)
         window.contentView = host

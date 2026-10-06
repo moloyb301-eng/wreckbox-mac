@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tunnel.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
         tunnel.arguments = ["-f", RemoteAccess.binary.path]
         try? tunnel.run()
+        LibraryStore.ytProcess?.terminate()
         guard let p = LibraryStore.syncProcess, p.isRunning else { return }
         p.terminate()
         let deadline = Date().addingTimeInterval(3)
@@ -43,7 +44,11 @@ struct DJApp: App {
                 .environmentObject(phoneSync)
                 .environmentObject(updater)
                 .environmentObject(remote)
-                .onAppear { browser.store = store; phoneSync.attach(store); store.startInboxWatcher(); store.refreshSoulseek(); updater.start(); remote.server = phoneSync; remote.store = store; remote.resume() }
+                .onAppear { browser.store = store; phoneSync.attach(store); store.startInboxWatcher(); store.refreshSoulseek(); updater.start(); remote.server = phoneSync; remote.store = store; remote.resume()
+                    PlaylistSync.installAgent()
+                    if store.youtubeFillEnabled { store.startYouTubeFill() }
+                    if PlaylistSync.due { Task { await store.syncPlaylists() } }   // missed this morning's run
+                }
                 .frame(minWidth: 980, minHeight: 620)
                 .preferredColorScheme(.dark)
         }
@@ -154,6 +159,9 @@ struct LibraryActions: View {
                 .padding(.horizontal, 12).padding(.vertical, 7)
                 .background(Capsule().fill(Theme.glassFill))
             }
+            PillButton(label: "Sync playlists", icon: "arrow.triangle.2.circlepath") { Task { await store.syncPlaylists() } }
+                .disabled(store.busy != nil)
+                .help("Bring in tracks you added to your Spotify playlists (also runs every morning at 7:00)")
             PillButton(label: "Rescan & analyse", icon: "waveform.badge.magnifyingglass") { Task { await store.rescan() } }
                 .disabled(store.busy != nil)
                 .help("Read your music folders, relink moved files and analyse BPM / key / energy with Essentia")

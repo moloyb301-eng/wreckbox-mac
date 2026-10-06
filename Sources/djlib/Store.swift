@@ -145,6 +145,8 @@ final class LibraryStore: ObservableObject {
     /// Track id → index in library.tracks, so lookups don't scan 1,500+ tracks each time.
     private var trackIndex: [String: Int] = [:]
     @Published var state = AppState()
+    /// When library.json was last read, so a rebuild by the morning playlist sync is noticed.
+    var libraryLoadedAt: Date?
     @Published var bpm: [String: BPMResult] = [:]
     @Published var analysis: [String: FileAnalysis] = [:]   // keyed by file path
     @Published var genres: [String: GenreInfo] = [:]
@@ -386,6 +388,8 @@ final class LibraryStore: ObservableObject {
             while !Task.isCancelled {
                 await self?.importInbox()
                 self?.refreshSoulseek()
+                self?.refreshYouTube()
+                self?.reloadLibraryIfChanged()
                 try? await Task.sleep(for: .seconds(15))
             }
         }
@@ -399,6 +403,9 @@ final class LibraryStore: ObservableObject {
     // MARK: Soulseek sync (soulseek/slsk-sync)
 
     @Published var soulseek = SoulseekStatus()
+    @Published var youtube = YouTubeStatus()
+    /// The yt-fill process this app started (static so the app delegate can stop it on quit).
+    nonisolated(unsafe) static var ytProcess: Process?
     /// The sync process this app started (static so the app delegate can stop it on quit).
     nonisolated(unsafe) static var syncProcess: Process?
     private var slskProcess: Process? {
@@ -542,7 +549,10 @@ final class LibraryStore: ObservableObject {
             guard inboxSeen.insert("\(f.path)|\(size)").inserted else { continue }
             let stem = f.deletingPathExtension().lastPathComponent
             let base = stem.replacingOccurrences(of: #" \(\d+\)$"#, with: "", options: .regularExpression)
-            _ = await importDownloaded(f, source: "soulseek", trackID: byFileName[stem] ?? byFileName[base])
+            let id = byFileName[stem] ?? byFileName[base]
+            if let id, !youtube.got.contains(id) { refreshYouTube() }   // a yt-fill download that just landed
+            let source = id.map { youtube.got.contains($0) } == true ? "youtube" : "soulseek"
+            _ = await importDownloaded(f, source: source, trackID: id)
         }
     }
 }

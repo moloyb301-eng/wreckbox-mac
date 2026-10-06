@@ -153,11 +153,27 @@ struct SoulseekTile: View {
                 }
                 Text(statusLine(s)).font(Theme.ui(12.5)).foregroundStyle(Theme.text2).lineLimit(2)
                 HStack(spacing: 22) { counter("Got", s.done); counter("Not found", s.notFound); counter("Failed", s.failed) }
+                youtubeLine
             }
             .padding(16)
             .smartGlass(Theme.Radius.tile)
         } else {
             wide(s)
+        }
+    }
+
+    /// What Soulseek couldn't find comes from YouTube Music (official audio, Premium quality).
+    private var youtubeLine: some View {
+        let y = store.youtube
+        return HStack(spacing: 10) {
+            Image(systemName: "play.rectangle").foregroundStyle(Theme.lilac)
+            Text(y.running ? "YouTube fill on · \(y.done) got · \(y.notFound) not on YouTube" : "YouTube fill off · \(y.done) got")
+                .font(Theme.ui(12)).foregroundStyle(Theme.text2).lineLimit(1)
+            Spacer()
+            PillButton(label: y.running ? "Turn off" : "Turn on", icon: y.running ? "stop.fill" : "play.fill", style: y.running ? .glass : .smart) {
+                y.running ? store.stopYouTubeFill() : store.startYouTubeFill()
+            }
+            .help("Get tracks Soulseek can't find from YouTube Music — official audio only, in your Premium quality")
         }
     }
 
@@ -178,6 +194,7 @@ struct SoulseekTile: View {
             VStack(alignment: .leading, spacing: 4) {
                 DotLabel("Soulseek sync", color: Theme.text)
                 Text(statusLine(s)).font(Theme.ui(13)).foregroundStyle(Theme.text2).lineLimit(2)
+                youtubeLine.frame(maxWidth: 420)
             }
             Spacer()
             HStack(spacing: 18) {

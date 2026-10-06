@@ -165,6 +165,7 @@ struct ResultRow: View {
         HStack(spacing: 6) {
             RoundButton(icon: "arrow.clockwise", help: "Retry on the next pass") { store.retrySync([row.id]) }
             RoundButton(icon: "text.magnifyingglass", help: "Retry with your own search words", action: customSearch)
+            RoundButton(icon: "play.rectangle", help: "Get it from YouTube Music now (official audio)") { store.requestYouTube([row.id]) }
             Menu {
                 Section("Try another source") {
                     Button("SoundCloud") { findOnSoundCloud(store: store, browser: browser, id: row.id) }

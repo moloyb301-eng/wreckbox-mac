@@ -6,6 +6,7 @@ usage:
   djlib                                                   open the WreckBox app
   djlib spotify [--client-id ID] [--include-generated]   import your Spotify playlists + Liked Songs
   djlib library                                           build the master catalog from the Spotify export
+  djlib sync-playlists                                    both of the above (runs every morning at 07:00)
   djlib bpm --playlists "A,B" [--min 120 --max 145]       BPM list (ascending) for the given playlists
   djlib analyze [file or folder ...]                      BPM + key (Camelot) of local audio files
   djlib genres                                            genre per track, cross-checked from several sources
@@ -20,6 +21,7 @@ do {
     switch args.first {
     case "spotify": try await SpotifyImport.run(args: Array(args.dropFirst()))
     case "library": try buildLibrary()
+    case "sync-playlists": try await PlaylistSync.run()   // Spotify import + library rebuild (the 07:00 job)
     case "bpm": try await BPMTool.run(args: Array(args.dropFirst()))
     case "bpm-file":
         for p in args.dropFirst() { let r = BPMTool.estimateTempo(url: URL(fileURLWithPath: p)); print(p, r?.bpm ?? -1, r?.ambiguous ?? false, r?.alternate ?? 0) }

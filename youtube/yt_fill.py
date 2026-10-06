@@ -1,0 +1,393 @@
+#!/usr/bin/env python3
+"""yt-fill — get the tracks Soulseek can't find from YouTube Music, in the best quality your account allows.
+
+For every library track that slsk-sync tried and couldn't get, it searches YouTube Music for the official
+upload (artist's "song" entry, matching title, artist and length), downloads it with your YouTube Premium
+login (taken from your browser) and hands it to the app through _inbox/, like slsk-sync does. The app then
+files, analyses and tags it.
+
+Only official audio ("song" entries), never music videos. Quality: Premium gets Opus ~300 kbps (format 774) — decoded to FLAC so Rekordbox can read it without a second
+lossy encode; otherwise AAC 256 kbps (141) or the standard Opus ~160 / AAC 128 streams.
+
+    yt-fill run                  # keep filling: process due tracks, sleep, repeat (wakes on requests)
+    yt-fill once [--limit N]     # one pass, then exit
+    yt-fill search "Artist - Title"
+    yt-fill get <track id>       # this track now
+    yt-fill status
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import difflib
+import json
+import logging
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import unicodedata
+from pathlib import Path
+
+from ytmusicapi import YTMusic
+import yt_dlp
+
+HERE = Path(__file__).resolve().parent
+LIBRARY_ROOT = Path(os.environ.get("WRECKBOX_ROOT") or (Path.home() / "Music" / "DJ Library"))
+WORK_DIR = LIBRARY_ROOT / "_youtube"
+INBOX = LIBRARY_ROOT / "_inbox"
+RECORDS_FILE = WORK_DIR / "yt.json"          # per track: status, videoId, format, kbps, when
+REQUESTS_FILE = WORK_DIR / "requests.json"   # written by the app: {"<track id>": "<iso time>"} = get these now
+CONFIG_FILE = WORK_DIR / "config.json"
+LOG_FILE = WORK_DIR / "yt.log"
+SLSK_SYNC = LIBRARY_ROOT / "_soulseek" / "sync.json"
+FFMPEG = shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
+
+DEFAULTS = {
+    "browser": "chrome",            # where you're signed in to YouTube (Premium): chrome, safari, firefox, brave, edge
+    "interval_minutes": 30,
+    "gap_seconds": 8,               # pause between downloads, so YouTube doesn't think it's a bot
+    "retry_after_days": 7,
+    "max_attempts": 3,
+    "duration_tolerance_seconds": 4,
+    "formats": "774/141/251/140/bestaudio",   # Premium Opus ~300k, AAC 256k, then the standard Opus 160k / AAC 128k
+    "allow_videos": False,          # music videos often have intros / skits / other edits: official audio only
+}
+
+VARIANT_WORDS = {"remix", "rmx", "live", "acapella", "acappella", "instrumental", "karaoke", "cover", "slowed",
+                 "reverb", "sped", "nightcore", "8d", "lofi", "lo-fi", "mashup", "bootleg", "unplugged", "reprise",
+                 "extended", "vip", "edit"}
+
+log = logging.getLogger("yt-fill")
+
+
+# ── files ─────────────────────────────────────────────────────────────────────
+
+def load_json(path: Path, default):
+    try:
+        return json.loads(path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return default
+
+
+def save_json(path: Path, data) -> None:
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
+    tmp.replace(path)
+
+
+def now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def days_since(iso: str | None) -> float:
+    if not iso:
+        return 1e9
+    then = dt.datetime.strptime(iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+    return (dt.datetime.now(dt.timezone.utc) - then).total_seconds() / 86400
+
+
+def config() -> dict:
+    cfg = dict(DEFAULTS)
+    cfg.update(load_json(CONFIG_FILE, {}))
+    return cfg
+
+
+# ── which tracks ──────────────────────────────────────────────────────────────
+
+def due_tracks(cfg: dict, records: dict) -> list[dict]:
+    """Requested tracks first, then tracks Soulseek tried and couldn't get, newest additions first."""
+    library = load_json(LIBRARY_ROOT / "library.json", {"tracks": []})
+    state = load_json(LIBRARY_ROOT / "state.json", {}).get("tracks", {})
+    slsk = load_json(SLSK_SYNC, {})
+    requests = load_json(REQUESTS_FILE, {})
+    inbox = {p.stem for p in INBOX.glob("*") if p.is_file()} if INBOX.exists() else set()
+    requested, rest = [], []
+    for t in library["tracks"]:
+        if state.get(t["id"], {}).get("status") in ("downloaded", "ignored") or t["fileName"] in inbox:
+            continue
+        rec = records.get(t["id"], {})
+        if t["id"] in requests and requests[t["id"]] > (rec.get("last_try") or ""):
+            requested.append(t)
+            continue
+        if slsk.get(t["id"], {}).get("status") not in ("not_found", "failed"):
+            continue   # Soulseek first: it usually has lossless
+        if rec.get("status") == "done":
+            continue
+        if rec and (rec.get("attempts", 0) >= cfg["max_attempts"] or days_since(rec.get("last_try")) < cfg["retry_after_days"]):
+            continue
+        rest.append(t)
+    rest.sort(key=lambda t: t.get("firstAdded") or "", reverse=True)
+    return requested + rest
+
+
+# ── matching ──────────────────────────────────────────────────────────────────
+
+def norm(s: str) -> str:
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower()
+    s = s.replace("&", " and ")
+    return " ".join(re.findall(r"[a-z0-9]+", s))
+
+
+def clean_title(title: str) -> str:
+    """Drop feat. / 'From "Film"' / remaster noise; keep remix and version names."""
+    t = re.sub(r"[\(\[]\s*(feat|ft|with)\.?\s[^\)\]]*[\)\]]", "", title, flags=re.I)
+    t = re.sub(r"[\(\[]\s*from\s[^\)\]]*[\)\]]", "", t, flags=re.I)          # (From "Aashiqui 2")
+    t = re.sub(r"\s(feat|ft)\.?\s.*$", "", t, flags=re.I)
+    t = re.sub(r"\s-\s.*(remaster|from\s|original mix|radio edit).*$", "", t, flags=re.I)
+    return t.strip()
+
+
+def words(s: str) -> set[str]:
+    return set(norm(s).split())
+
+
+def score(track: dict, r: dict, tol: int) -> float | None:
+    """0..1 how well a YouTube Music result matches the track, or None if it's not the same recording."""
+    want_title, got_title = norm(clean_title(track["title"])), norm(clean_title(r.get("title") or ""))
+    if not got_title:
+        return None
+    # A remix / slowed / live version only matches if the Spotify title asks for it too.
+    extra = (words(r.get("title") or "") & VARIANT_WORDS) - words(track["title"])
+    if extra:
+        return None
+    t = difflib.SequenceMatcher(None, want_title, got_title).ratio()
+    if want_title and (want_title in got_title or got_title in want_title):
+        t = max(t, 0.9)
+    if t < 0.72:
+        return None
+    ours = [norm(a) for a in track["artists"]]
+    theirs = [norm(a.get("name") or "") for a in (r.get("artists") or [])]
+    if not any(o and th and (o in th or th in o) for o in ours for th in theirs):
+        return None
+    d = r.get("duration_seconds")
+    if track.get("durationMs") and d:
+        diff = abs(d - track["durationMs"] / 1000)
+        if diff > tol:
+            return None
+        dur = 1 - diff / (tol + 1)
+    else:
+        dur = 0.5
+    return 0.6 * t + 0.25 * dur + (0.15 if r.get("resultType") == "song" else 0)
+
+
+def find(yt: YTMusic, track: dict, cfg: dict) -> tuple[dict, float] | None:
+    artist = track["artists"][0] if track["artists"] else ""
+    title = clean_title(track["title"])
+    best = None
+    # Official "song" uploads = the artist's audio release (no video intros or edits), with full metadata.
+    for kind in ("songs", "videos") if cfg.get("allow_videos") else ("songs",):
+        try:
+            results = yt.search(f"{artist} {title}", filter=kind, limit=10)
+        except Exception as e:  # network hiccup / changed API: try the next kind
+            log.info("  search failed (%s): %s", kind, e)
+            continue
+        for r in results:
+            s = score(track, r, cfg["duration_tolerance_seconds"] if kind == "songs" else 3)
+            if s is not None and (best is None or s > best[1]):
+                best = (r, s)
+        if best:
+            return best
+    return None
+
+
+# ── downloading ───────────────────────────────────────────────────────────────
+
+COOKIE_FILE = WORK_DIR / "cookies.txt"   # your YouTube login, copied from the browser once per pass (private to you)
+
+
+def refresh_cookies(cfg: dict) -> None:
+    """Reads the browser's YouTube login once (macOS asks for the browser's keychain item — "Always Allow"
+    keeps it quiet) and saves just the YouTube / Google cookies for this pass's downloads."""
+    if not cfg.get("browser"):
+        return
+    from yt_dlp.cookies import extract_cookies_from_browser
+    import http.cookiejar
+    jar = extract_cookies_from_browser(cfg["browser"])
+    out = http.cookiejar.MozillaCookieJar(str(COOKIE_FILE))
+    for c in jar:
+        if c.domain.endswith(("youtube.com", "google.com")):
+            out.set_cookie(c)
+    COOKIE_FILE.touch(mode=0o600, exist_ok=True)
+    os.chmod(COOKIE_FILE, 0o600)
+    out.save(ignore_discard=True, ignore_expires=True)
+
+def download(video_id: str, dest_stem: str, cfg: dict) -> dict:
+    """Downloads the best audio into _inbox/<dest_stem>.flac|.m4a. Returns {format, kbps, codec, path}."""
+    tmp = Path(tempfile.mkdtemp(prefix="yt-", dir=WORK_DIR))
+    try:
+        opts = {
+            "format": cfg["formats"],
+            "outtmpl": str(tmp / "%(id)s.%(ext)s"),
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "noprogress": True,
+        }
+        if COOKIE_FILE.exists():
+            opts["cookiefile"] = str(COOKIE_FILE)
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(f"https://music.youtube.com/watch?v={video_id}", download=True)
+        got = next(p for p in tmp.iterdir() if p.is_file())
+        codec = (info.get("acodec") or "").split(".")[0]
+        kbps = round(info.get("abr") or 0)
+        INBOX.mkdir(parents=True, exist_ok=True)
+        if codec == "mp4a":
+            out = tmp / f"{dest_stem}.m4a"
+            # Re-wrap only (no re-encode) so the file is a clean .m4a.
+            subprocess.run([FFMPEG, "-v", "error", "-y", "-i", str(got), "-vn", "-c:a", "copy", "-movflags", "+faststart", str(out)], check=True)
+        else:
+            # Opus: Rekordbox can't read it; decoding to FLAC keeps every bit of it without a second lossy encode.
+            out = tmp / f"{dest_stem}.flac"
+            subprocess.run([FFMPEG, "-v", "error", "-y", "-i", str(got), "-vn", "-c:a", "flac", "-sample_fmt", "s16", str(out)], check=True)
+        final = INBOX / out.name
+        shutil.move(str(out), final)   # the app only ever sees complete files
+        return {"format": info.get("format_id"), "kbps": kbps, "codec": codec, "path": str(final)}
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ── passes ────────────────────────────────────────────────────────────────────
+
+def mark(records: dict, track: dict, status: str, **extra) -> None:
+    rec = records.get(track["id"], {})
+    rec.update({"status": status, "last_try": now_iso(), "attempts": rec.get("attempts", 0) + 1, **extra})
+    records[track["id"]] = rec
+    save_json(RECORDS_FILE, records)
+
+
+def fill(track: dict, yt: YTMusic, cfg: dict, records: dict) -> bool:
+    name = f"{', '.join(track['artists'])} - {track['title']}"
+    hit = find(yt, track, cfg)
+    if not hit:
+        log.info("✗ not on YouTube Music: %s", name)
+        mark(records, track, "not_found")
+        return False
+    r, s = hit
+    try:
+        got = download(r["videoId"], track["fileName"], cfg)
+    except Exception as e:
+        log.info("✗ download failed: %s — %s", name, str(e).splitlines()[0][:200])
+        mark(records, track, "failed", videoId=r["videoId"], reason=str(e).splitlines()[0][:200])
+        return False
+    log.info("✓ %s  [%s %s kbps, %s, match %.2f]", name, got["codec"], got["kbps"], r.get("resultType"), s)
+    mark(records, track, "done", videoId=r["videoId"], format=got["format"], kbps=got["kbps"], codec=got["codec"],
+         ytTitle=r.get("title"), match=round(s, 2))
+    return True
+
+
+def run_pass(cfg: dict, limit: int | None) -> int:
+    records = load_json(RECORDS_FILE, {})
+    todo = due_tracks(cfg, records)[: limit or None]
+    if not todo:
+        log.info("Nothing to get from YouTube right now")
+        return 0
+    log.info("Pass: %d tracks to look for on YouTube Music", len(todo))
+    try:
+        refresh_cookies(cfg)
+    except Exception as e:
+        log.info("Couldn't read your YouTube login from %s (%s) — downloading without Premium quality", cfg.get("browser"), e)
+    yt = YTMusic()
+    ok = 0
+    for i, t in enumerate(todo):
+        if i:
+            time.sleep(cfg["gap_seconds"])
+        ok += fill(t, yt, cfg, records)
+    log.info("Pass finished: %d of %d downloaded", ok, len(todo))
+    return ok
+
+
+def sleep_until_requested(seconds: float) -> None:
+    """Sleep between passes, but wake early when the app asks for a track."""
+    def stamp():
+        return REQUESTS_FILE.stat().st_mtime if REQUESTS_FILE.exists() else 0
+    start, before = time.monotonic(), stamp()
+    while time.monotonic() - start < seconds:
+        time.sleep(5)
+        if stamp() != before:
+            log.info("New request from the app — starting a pass")
+            return
+
+
+# ── lock + main ───────────────────────────────────────────────────────────────
+
+_lock_file = None
+
+
+def acquire_lock() -> None:
+    global _lock_file
+    import fcntl
+    _lock_file = open(WORK_DIR / "yt.lock", "a+")
+    try:
+        fcntl.flock(_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        raise SystemExit("yt-fill is already running — not starting a second copy.")
+    (WORK_DIR / "yt.pid").write_text(str(os.getpid()))
+
+
+def setup_logging() -> None:
+    fmt = logging.Formatter("%(asctime)s %(message)s", "%Y-%m-%d %H:%M:%S")
+    for h in (logging.StreamHandler(sys.stdout), logging.FileHandler(LOG_FILE)):
+        h.setFormatter(fmt)
+        log.addHandler(h)
+    log.setLevel(logging.INFO)
+
+
+def main() -> None:
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    ap = argparse.ArgumentParser(prog="yt-fill", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("run")
+    once = sub.add_parser("once")
+    once.add_argument("--limit", type=int)
+    s = sub.add_parser("search")
+    s.add_argument("query")
+    g = sub.add_parser("get")
+    g.add_argument("id")
+    sub.add_parser("status")
+    a = ap.parse_args()
+    setup_logging()
+    cfg = config()
+
+    if a.cmd == "search":
+        artist, _, title = a.query.partition(" - ")
+        track = {"artists": [artist] if title else [], "title": title or a.query, "durationMs": None}
+        yt = YTMusic()
+        for kind in ("songs", "videos"):
+            for r in yt.search(a.query, filter=kind, limit=8):
+                sc = score(track, r, 99)
+                print(f"{kind[:-1]:5} {'%.2f' % sc if sc is not None else ' -  '}  {r.get('title')} — "
+                      f"{', '.join(x['name'] for x in r.get('artists') or [])}  ({r.get('duration')})  {r.get('videoId')}")
+        return
+    if a.cmd == "status":
+        recs = load_json(RECORDS_FILE, {})
+        counts: dict[str, int] = {}
+        for r in recs.values():
+            counts[r.get("status", "?")] = counts.get(r.get("status", "?"), 0) + 1
+        print(json.dumps(counts))
+        return
+    if a.cmd == "get":
+        library = load_json(LIBRARY_ROOT / "library.json", {"tracks": []})
+        track = next((t for t in library["tracks"] if t["id"] == a.id), None)
+        if not track:
+            raise SystemExit(f"no track {a.id}")
+        refresh_cookies(cfg)
+        fill(track, YTMusic(), cfg, load_json(RECORDS_FILE, {}))
+        return
+
+    acquire_lock()
+    if not Path(FFMPEG).exists():
+        raise SystemExit("ffmpeg is missing (brew install ffmpeg)")
+    while True:
+        run_pass(cfg, getattr(a, "limit", None))
+        if a.cmd == "once":
+            break
+        log.info("Sleeping %d min", cfg["interval_minutes"])
+        sleep_until_requested(cfg["interval_minutes"] * 60)
+
+
+if __name__ == "__main__":
+    main()

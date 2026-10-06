@@ -25,6 +25,7 @@ enum Snapshot {
                 store.state.downloadPriority = ["playlist:hard beatz", "genre:" + (store.genreCounts.first?.0 ?? "")]
             }
             let view = ContentView().environmentObject(store).environmentObject(browser)
+                .environmentObject(PhoneSyncServer()).environmentObject(Updater()).environmentObject(RemoteAccess())
                 .frame(width: name.hasPrefix("narrow") ? 1000 : 1440, height: name.hasPrefix("narrow") ? 660 : 900).preferredColorScheme(.dark)
                 .environment(\.colorScheme, .dark).environment(\.snapshotMode, true)
             let r = ImageRenderer(content: view)
