@@ -33,10 +33,16 @@ do {
     case "phone-serve":   // developer test: serve the crate to phones for N seconds (no window)
         let store = await LibraryStore()
         let server = PhoneSyncServer()
-        server.store = store
+        await server.attach(store)
         await server.start()
         print(server.pairingURI)
-        try await Task.sleep(for: .seconds(Double(args.dropFirst().first ?? "60") ?? 60))
+        print("ticket secret:", PhoneSyncServer.ticketSecret, "device:", AccountAPI.deviceID)
+        // A "test" event every 10 s, so live updates can be checked without changing the library.
+        let end = Date().addingTimeInterval(Double(args.dropFirst().first ?? "60") ?? 60)
+        while Date() < end {
+            try await Task.sleep(for: .seconds(10))
+            server.testEvent()
+        }
     case "tag-job":   // prints the tag job the app would write for a track (no file is changed)
         let store = await LibraryStore()
         let id = await args.dropFirst().first ?? (store.library?.tracks.first { store.state.tracks[$0.id]?.status == .downloaded }?.id ?? "")

@@ -43,7 +43,7 @@ struct DJApp: App {
                 .environmentObject(phoneSync)
                 .environmentObject(updater)
                 .environmentObject(remote)
-                .onAppear { browser.store = store; phoneSync.store = store; store.startInboxWatcher(); store.refreshSoulseek(); updater.start(); remote.server = phoneSync; remote.store = store; remote.resume() }
+                .onAppear { browser.store = store; phoneSync.attach(store); store.startInboxWatcher(); store.refreshSoulseek(); updater.start(); remote.server = phoneSync; remote.store = store; remote.resume() }
                 .frame(minWidth: 980, minHeight: 620)
                 .preferredColorScheme(.dark)
         }

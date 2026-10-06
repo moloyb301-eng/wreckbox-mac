@@ -1,3 +1,4 @@
+import AuthenticationServices
 import CommonCrypto
 import Foundation
 import SwiftUI
@@ -90,11 +91,60 @@ enum AccountAPI {
         try await call("PUT", "v1/blob/state", body: jsonBody(["tracks": tracks, "from": deviceID, "at": ISO8601DateFormatter().string(from: Date())]))
     }
 
-    static func registerComputer(url: String?, syncToken: String?) async throws {
-        var body: [String: Any] = ["id": deviceID, "name": "WreckBox on \(Host.current().localizedName ?? "Mac")", "platform": "macos"]
+    /// Registers this Mac with its tunnel address (nil = not reachable) and the secret the account service signs
+    /// phones' tickets with. Phones never receive the secret or the pairing token.
+    static func registerComputer(url: String?) async throws {
+        var body: [String: Any] = ["id": deviceID, "name": "WreckBox on \(Host.current().localizedName ?? "Mac")", "platform": "macos",
+                                   "ticketSecret": PhoneSyncServer.ticketSecret]
         if let url { body["url"] = url }
-        if let syncToken { body["syncToken"] = syncToken }
         try await call("POST", "v1/devices", body: jsonBody(body))
+    }
+
+    /// Requests phones queued in the account while this Mac was offline (handed out once).
+    static func takeQueuedRequests() async throws -> [[String: Any]] {
+        var c = URLComponents(url: base.appendingPathComponent("v1/requests"), resolvingAgainstBaseURL: false)!
+        c.queryItems = [URLQueryItem(name: "device", value: deviceID)]
+        var req = URLRequest(url: c.url!)
+        req.setValue("Bearer \(token ?? "")", forHTTPHeaderField: "authorization")
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return [] }
+        return ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["requests"] as? [[String: Any]] ?? []
+    }
+
+    // MARK: Sign in with Google
+
+    /// Google sign-in runs on the account service; this Mac only sees a one-time code, which it swaps for a session
+    /// together with a secret (PKCE) that never left the Mac.
+    @MainActor static func signInWithGoogle() async throws {
+        var raw = [UInt8](repeating: 0, count: 32)
+        _ = SecRandomCopyBytes(kSecRandomDefault, raw.count, &raw)
+        let verifier = b64url(Data(raw))
+        var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+        let v = Array(verifier.utf8)
+        CC_SHA256(v, CC_LONG(v.count), &digest)
+        var start = URLComponents(url: base.appendingPathComponent("v1/auth/google/start"), resolvingAgainstBaseURL: false)!
+        start.queryItems = [URLQueryItem(name: "redirect", value: "wreckbox://auth"), URLQueryItem(name: "challenge", value: b64url(Data(digest)))]
+        let callback: URL = try await withCheckedThrowingContinuation { cont in
+            let session = ASWebAuthenticationSession(url: start.url!, callbackURLScheme: "wreckbox") { url, error in
+                if let url { cont.resume(returning: url) } else { cont.resume(throwing: error ?? Failure(message: "Sign-in cancelled.")) }
+            }
+            session.presentationContextProvider = WebAuthAnchor.shared
+            session.prefersEphemeralWebBrowserSession = false
+            WebAuthAnchor.shared.session = session   // must stay alive until the sheet closes
+            if !session.start() { cont.resume(throwing: Failure(message: "Couldn't open the sign-in window.")) }
+        }
+        let items = URLComponents(url: callback, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        if let e = items.first(where: { $0.name == "error" })?.value {
+            throw Failure(message: e == "cancelled" || e == "access_denied" ? "Sign-in cancelled." : "Google sign-in failed (\(e)).")
+        }
+        guard let code = items.first(where: { $0.name == "code" })?.value else { throw Failure(message: "Google sign-in failed.") }
+        let j = try await call("POST", "v1/auth/exchange", body: jsonBody(["code": code, "verifier": verifier]))
+        token = j["token"] as? String
+        email = (j["user"] as? [String: Any])?["email"] as? String
+    }
+
+    static func b64url(_ d: Data) -> String {
+        d.base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
     }
 }
 
@@ -174,7 +224,7 @@ final class RemoteAccess: ObservableObject {
         proc = nil
         url = nil
         status = "Off"
-        Task { try? await AccountAPI.registerComputer(url: nil, syncToken: nil) } // no longer reachable
+        Task { try? await AccountAPI.registerComputer(url: nil) } // no longer reachable
     }
 
     /// Re-registers the address (keeps "online") and refreshes the library copy in the account.
@@ -182,8 +232,9 @@ final class RemoteAccess: ObservableObject {
         guard let url else { return }
         server?.refreshCrate()
         do {
-            try await AccountAPI.registerComputer(url: url, syncToken: server?.token)
+            try await AccountAPI.registerComputer(url: url)
             if let store { try await AccountAPI.uploadLibrary(store) }
+            if let queued = try? await AccountAPI.takeQueuedRequests(), !queued.isEmpty { server?.takeQueued(queued) }
         } catch {
             status = "Account: \(error.localizedDescription)"
             signedIn = AccountAPI.signedIn
@@ -252,6 +303,20 @@ struct AccountPanel: View {
                             busy = false
                         }
                     }
+                    PillButton(label: "Continue with Google", icon: "g.circle", style: .glass) {
+                        guard !busy else { return }
+                        busy = true
+                        message = nil
+                        Task {
+                            do {
+                                try await AccountAPI.signInWithGoogle()
+                                remote.signedIn = true
+                            } catch {
+                                if (error as? ASWebAuthenticationSessionError)?.code != .canceledLogin { message = error.localizedDescription }
+                            }
+                            busy = false
+                        }
+                    }
                     Button(creating ? "I have an account" : "Create an account") { creating.toggle() }
                         .buttonStyle(.plain).font(Theme.ui(12.5, .semibold)).foregroundStyle(Theme.text2)
                 }
@@ -260,5 +325,14 @@ struct AccountPanel: View {
         }
         .padding(18)
         .smartGlass(Theme.Radius.tile)
+    }
+}
+
+/// Window the Google sign-in sheet attaches to.
+final class WebAuthAnchor: NSObject, ASWebAuthenticationPresentationContextProviding {
+    static let shared = WebAuthAnchor()
+    var session: ASWebAuthenticationSession?
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        NSApp.keyWindow ?? NSApp.windows.first ?? ASPresentationAnchor()
     }
 }

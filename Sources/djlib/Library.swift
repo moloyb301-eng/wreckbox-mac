@@ -92,6 +92,7 @@ func buildLibrary() throws {
         try FileManager.default.createDirectory(at: libraryRoot.appendingPathComponent(dir), withIntermediateDirectories: true)
     }
 
+    PhoneRequests.merge(into: &tracks, playlists: &playlists)   // tracks asked for from the phone
     let lib = Library(builtAt: Date(), spotifyUser: export.user, tracks: tracks, playlists: playlists)
     let enc = JSONEncoder()
     enc.outputFormatting = [.prettyPrinted, .sortedKeys]
