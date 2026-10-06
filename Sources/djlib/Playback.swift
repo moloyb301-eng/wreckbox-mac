@@ -72,6 +72,7 @@ final class Playback: ObservableObject {
     private var timeObserver: Any?
     private var endObserver: AnyCancellable?
     private var tick: AnyCancellable?
+    private var ready: AnyCancellable?
 
     private init() {
         player.automaticallyWaitsToMinimizeStalling = false
@@ -172,7 +173,11 @@ final class Playback: ObservableObject {
         guard i >= 0, i < queue.count, let path = localPath(queue[i]) else { error = "Not on this Mac"; return }
         error = nil
         index = i
-        player.replaceCurrentItem(with: AVPlayerItem(url: URL(fileURLWithPath: path)))
+        let item = AVPlayerItem(url: URL(fileURLWithPath: path))
+        // The length is only known once the file is open: report again then, so other devices show it.
+        ready = item.publisher(for: \.status).filter { $0 == .readyToPlay }.first().receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.updateNowPlaying(); self?.reportLocal() }
+        player.replaceCurrentItem(with: item)
         if position > 0 { player.seek(to: CMTime(seconds: position, preferredTimescale: 600)) }
         if playing { player.play(); activeID = selfID }
         updateNowPlaying()
