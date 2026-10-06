@@ -14,6 +14,22 @@ enum Playable {
             || ((path as NSString).pathExtension.lowercased() == "m4a" && (FileQuality.probe(path)?.unplayable ?? false))
     }
 
+    /// Track id → what a converted file was ({"codec": "DOLBY" | "OGG" …, "kbps": 768}); _cache/converted.json.
+    static var convertedFile: URL { libraryRoot.appendingPathComponent("_cache/converted.json") }
+    static var converted: [String: [String: Any]] {
+        (try? JSONSerialization.jsonObject(with: Data(contentsOf: convertedFile))) as? [String: [String: Any]] ?? [:]
+    }
+
+    /// Notes the source format of `path` (before converting it) for track `id`.
+    static func recordSource(_ path: String, id: String) {
+        let q = FileQuality.probe(path)
+        let ext = (path as NSString).pathExtension.uppercased()
+        let codec = q?.unplayable == true ? "DOLBY" : (q?.codec ?? ext)
+        var all = converted
+        all[id] = ["codec": codec == "M4A" ? ext : codec, "kbps": q?.kbps as Any]
+        if let d = try? JSONSerialization.data(withJSONObject: all, options: [.prettyPrinted, .sortedKeys]) { try? d.write(to: convertedFile, options: .atomic) }
+    }
+
     /// Converts to a FLAC next to the original; returns its path (the original is left for the caller).
     static func convertToFLAC(_ path: String) -> String? {
         guard let ffmpeg else { return nil }
@@ -43,6 +59,7 @@ extension LibraryStore {
         for (id, st) in state.tracks where st.status == .downloaded {
             guard let path = st.localPath, FileManager.default.fileExists(atPath: path),
                   Playable.needsConversion(path, quality: quality[path]) else { continue }
+            Playable.recordSource(path, id: id)
             guard let flac = await Task.detached(priority: .utility, operation: { Playable.convertToFLAC(path) }).value else {
                 log("convert", id, "couldn't convert \((path as NSString).lastPathComponent) to FLAC")
                 continue

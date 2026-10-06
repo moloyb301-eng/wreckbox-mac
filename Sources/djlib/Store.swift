@@ -585,6 +585,12 @@ final class LibraryStore: ObservableObject {
         let byFileName = Dictionary(lib.tracks.map { ($0.fileName, $0.id) }, uniquingKeysWith: { a, _ in a })
         for var f in files where audioExtensions.contains(f.pathExtension.lowercased()) {
             // Formats Rekordbox can't play (OGG, Opus, WMA, Dolby surround) become FLAC before they're filed.
+            if Playable.needsConversion(f.path, quality: nil) {
+                let stem = f.deletingPathExtension().lastPathComponent
+                if let id = byFileName[stem] ?? byFileName[stem.replacingOccurrences(of: #" \(\d+\)$"#, with: "", options: .regularExpression)] {
+                    Playable.recordSource(f.path, id: id)
+                }
+            }
             if Playable.needsConversion(f.path, quality: nil),
                let flac = await Task.detached(priority: .utility, operation: { [f] in Playable.convertToFLAC(f.path) }).value {
                 try? FileManager.default.removeItem(at: f)

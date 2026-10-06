@@ -15,17 +15,22 @@ struct FileQuality: Codable, Equatable {
     var size: Int64            // to notice a replaced file
     var fromYouTube = false
     var channels: Int?
+    /// Set when WreckBox converted a format Rekordbox can't play (Dolby, OGG …) to FLAC: what the source was.
+    /// Such files are not truly lossless (lossless = false), so the Soulseek FLAC re-check still looks for them.
+    var convertedFrom: String?
 
     /// Dolby surround (E-AC-3 / AC-3) — Rekordbox and CDJs can't play it.
     var unplayable: Bool { codec == "E-AC3" || codec == "AC3" }
     var label: String {
         if unplayable { return "\(codec)\((channels ?? 2) > 2 ? " 5.1" : "")" }
+        if let c = convertedFrom { return kbps.map { "\(c) \($0)" } ?? c }
         if lossless && !fromYouTube { return (bits ?? 16) > 16 ? "\(codec) \(bits!)" : codec }
         return kbps.map { "\(codec) \($0)" } ?? codec
     }
 
     var detail: String {
         var parts: [String] = []
+        if let c = convertedFrom { return "\(c)\(kbps.map { " \($0) kbps" } ?? "") source, converted to FLAC so Rekordbox can play it — a real FLAC is still being looked for" }
         if unplayable { return "Dolby surround (\(codec), \(channels ?? 0) channels) — Rekordbox and CDJs can't play this; replace it" }
         if fromYouTube { parts.append("YouTube Music, Opus \(kbps ?? 0) kbps — saved as FLAC so Rekordbox can read it") }
         else if lossless { parts.append("Lossless \(codec)") }
@@ -98,11 +103,16 @@ extension LibraryStore {
         }
         guard !todo.isEmpty else { return }
         let sources = Dictionary(state.tracks.map { ($0.key, $0.value.source ?? "") }, uniquingKeysWith: { a, _ in a })
+        let converted = Playable.converted
         let found = await Task.detached(priority: .utility) { () -> [String: FileQuality] in
             var out: [String: FileQuality] = [:]
             for (p, id) in todo {
                 guard var q = FileQuality.probe(p) else { continue }
-                if sources[id] == "youtube", let r = yt[id] {
+                if let c = converted[id] {
+                    q.convertedFrom = c["codec"] as? String
+                    q.kbps = c["kbps"] as? Int
+                    q.lossless = false
+                } else if sources[id] == "youtube", let r = yt[id] {
                     q.fromYouTube = true
                     q.codec = ((r["codec"] as? String) == "mp4a") ? "AAC" : "OPUS"
                     q.kbps = r["kbps"] as? Int
