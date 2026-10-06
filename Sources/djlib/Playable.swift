@@ -36,18 +36,24 @@ enum Playable {
     /// Converts to a FLAC next to the original; returns its path (the original is left for the caller).
     static func convertToFLAC(_ path: String) -> String? {
         guard let ffmpeg else { return nil }
-        let out = (path as NSString).deletingPathExtension + ".flac"
+        // Never over another file: a different "Name.flac" already next to it gets "Name (2).flac".
+        let stem = (path as NSString).deletingPathExtension
+        var out = stem + ".flac", n = 2
+        while out != path, FileManager.default.fileExists(atPath: out) { out = "\(stem) (\(n)).flac"; n += 1 }
+        // Keep 24-bit sources 24-bit (best quality); everything else is 16-bit.
+        let bits = FileQuality.probe(path)?.bits ?? 16
+        let depth = bits > 16 ? ["-sample_fmt", "s32", "-bits_per_raw_sample", "24"] : ["-sample_fmt", "s16"]
         let tmp = out + ".part.flac"
         try? FileManager.default.removeItem(atPath: tmp)
         let p = Process()
         p.executableURL = URL(fileURLWithPath: ffmpeg)
-        p.arguments = ["-v", "error", "-y", "-i", path, "-vn", "-map", "0:a:0", "-ac", "2", "-c:a", "flac", "-sample_fmt", "s16", tmp]
+        p.arguments = ["-v", "error", "-y", "-i", path, "-vn", "-map", "0:a:0", "-ac", "2", "-c:a", "flac"] + depth + [tmp]
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
         do { try p.run() } catch { return nil }
         p.waitUntilExit()
         guard p.terminationStatus == 0, FileManager.default.fileExists(atPath: tmp) else { try? FileManager.default.removeItem(atPath: tmp); return nil }
-        try? FileManager.default.removeItem(atPath: out)
+        if out == path { try? FileManager.default.removeItem(atPath: out) }   // a surround .flac replaced in place
         do { try FileManager.default.moveItem(atPath: tmp, toPath: out) } catch { return nil }
         return out
     }

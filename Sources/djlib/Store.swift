@@ -335,6 +335,7 @@ final class LibraryStore: ObservableObject {
             return "Saved to _inbox (no matching track): \(file.lastPathComponent)"
         }
         let t = lib.tracks[i]
+        var replacedCopy: (URL?, String)?
         // Best quality wins. A better YouTube copy (Premium after standard) replaces the old YouTube copy; otherwise a
         // second copy of a track (e.g. slsk-sync's lossless upgrade pass) replaces the old one only if it's better —
         // lossless over lossy, then bitrate — and is dropped if it isn't, so a track never has two files.
@@ -345,7 +346,9 @@ final class LibraryStore: ObservableObject {
             let oldRank = quality[oldPath].map(Self.rank)
                 ?? (old.source == "youtube" ? 300 : FileQuality.probe(oldPath).map(Self.rank) ?? 0)
             if (source == "youtube" && old.source == "youtube") || (source != "youtube" && newRank > oldRank) {
-                try? FileManager.default.trashItem(at: URL(fileURLWithPath: oldPath), resultingItemURL: nil)
+                var trashed: NSURL?
+                try? FileManager.default.trashItem(at: URL(fileURLWithPath: oldPath), resultingItemURL: &trashed)
+                replacedCopy = (trashed as URL?, oldPath)
                 analysis[oldPath] = nil
                 quality[oldPath] = nil
                 log(source, t.id, source == "youtube" ? "replaced the earlier YouTube copy of \(describe(t.id))"
@@ -364,6 +367,10 @@ final class LibraryStore: ObservableObject {
             try FileManager.default.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
             try FileManager.default.moveItem(at: file, to: dest)
         } catch {
+            // Put the copy it was replacing back, so a failed move never leaves the track without a file.
+            if let (trashed, original) = replacedCopy, let trashed {
+                try? FileManager.default.moveItem(at: trashed, to: URL(fileURLWithPath: original))
+            }
             log("import failed", t.id, "\(file.lastPathComponent): \(error.localizedDescription)")
             save()
             return "Import failed: \(error.localizedDescription)"

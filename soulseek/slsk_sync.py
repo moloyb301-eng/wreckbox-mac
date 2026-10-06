@@ -508,7 +508,7 @@ class Syncer:
                 if dest:
                     log.info("✓ %s → _inbox/%s (replaces the lossy copy)", who, dest.name)
                     up.update(done=now_iso(), format=c.ext)
-                    rec.update(file=dest.name, source=f"{c.username}:{c.path}", format=c.ext, bitrate=c.bitrate, sizeBytes=c.size)
+                    rec.update(status="done", reason=None, file=dest.name, source=f"{c.username}:{c.path}", format=c.ext, bitrate=c.bitrate, sizeBytes=c.size)
                     save_json(SYNC_FILE, self.sync)
                     return "upgraded"
         save_json(SYNC_FILE, self.sync)

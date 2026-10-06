@@ -23,6 +23,28 @@ struct DeviceState: Codable, Equatable {
     var index: Int?
     var volume: Double?
 
+    init(id: String, name: String, kind: String, trackID: String?, playing: Bool, position: Double, duration: Double,
+         updatedAt: Double, queue: [String]?, index: Int?, volume: Double?) {
+        (self.id, self.name, self.kind, self.trackID, self.playing, self.position, self.duration) = (id, name, kind, trackID, playing, position, duration)
+        (self.updatedAt, self.queue, self.index, self.volume) = (updatedAt, queue, index, volume)
+    }
+
+    /// Phones leave out what they don't know (the hub stamps `updatedAt` itself), so only the id is required.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? "Phone"
+        kind = try c.decodeIfPresent(String.self, forKey: .kind) ?? "phone"
+        trackID = try c.decodeIfPresent(String.self, forKey: .trackID)
+        playing = try c.decodeIfPresent(Bool.self, forKey: .playing) ?? false
+        position = try c.decodeIfPresent(Double.self, forKey: .position) ?? 0
+        duration = try c.decodeIfPresent(Double.self, forKey: .duration) ?? 0
+        updatedAt = try c.decodeIfPresent(Double.self, forKey: .updatedAt) ?? 0
+        queue = try c.decodeIfPresent([String].self, forKey: .queue)
+        index = try c.decodeIfPresent(Int.self, forKey: .index)
+        volume = try c.decodeIfPresent(Double.self, forKey: .volume)
+    }
+
     /// Where it is now, counting the time since it reported.
     var livePosition: Double {
         guard playing else { return position }
@@ -62,6 +84,7 @@ final class Playback: ObservableObject {
         // The bar's clock (and controllers' estimates of a phone's position) move on their own.
         tick = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect().sink { [weak self] _ in
             guard let self, self.devices.values.contains(where: \.playing) else { return }
+            self.expireSilent()
             self.objectWillChange.send()
         }
         setUpRemoteCommands()
@@ -189,6 +212,20 @@ final class Playback: ObservableObject {
     }
 
     // MARK: hub (called by the phone-sync server)
+
+    /// A playing phone reports every 15 s; one silent for 45 s was closed or lost its connection: not playing.
+    private func expireSilent() {
+        let now = Date().timeIntervalSince1970 * 1000
+        var changed = false
+        for (id, d) in devices where id != selfID && d.playing && now - d.updatedAt > 45_000 {
+            var d = d
+            d.position = d.livePosition
+            d.playing = false
+            devices[id] = d
+            changed = true
+        }
+        if changed { publish() }
+    }
 
     /// A phone's report of what it plays.
     func update(_ s: DeviceState) {
