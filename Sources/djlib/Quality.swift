@@ -95,11 +95,13 @@ extension LibraryStore {
         }
         // YouTube fill records the real source quality of what it made.
         let yt = (try? JSONSerialization.jsonObject(with: Data(contentsOf: AppPaths.ytWorkDir.appendingPathComponent("yt.json")))) as? [String: [String: Any]] ?? [:]
+        let convertedIDs = Set(Playable.converted.keys)
         var todo: [(path: String, id: String)] = []
         for (id, st) in state.tracks where st.status == .downloaded {
             guard let p = st.localPath else { continue }
             let size = ((try? FileManager.default.attributesOfItem(atPath: p)[.size]) as? NSNumber)?.int64Value ?? -1
-            if quality[p]?.size != size { todo.append((p, id)) }
+            // Re-read changed files, and converted ones whose entry doesn't say what they were converted from yet.
+            if quality[p]?.size != size || (convertedIDs.contains(id) && quality[p]?.convertedFrom == nil) { todo.append((p, id)) }
         }
         guard !todo.isEmpty else { return }
         let sources = Dictionary(state.tracks.map { ($0.key, $0.value.source ?? "") }, uniquingKeysWith: { a, _ in a })
