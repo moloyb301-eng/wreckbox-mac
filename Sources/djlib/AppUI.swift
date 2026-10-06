@@ -58,6 +58,8 @@ struct DJApp: App {
                         try? FileManager.default.removeItem(at: request)
                         Task { await store.rebuildGenresAndOrganise() }
                     }
+                    Playback.shared.store = store       // player + device hub (Playback.swift)
+                    Playback.shared.server = phoneSync
                 }
                 .frame(minWidth: 980, minHeight: 620)
                 .preferredColorScheme(.dark)
@@ -98,6 +100,7 @@ struct ContentView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .safeAreaInset(edge: .bottom, spacing: 0) { NowPlayingBar() }
                 if let r = focused, showsInspector, !overlay {
                     Inspector(row: r).frame(width: 340).transition(.move(edge: .trailing).combined(with: .opacity))
                 }
@@ -411,9 +414,11 @@ struct TrackListView: View {
         if (NSApp.currentEvent?.clickCount ?? 1) >= 2 { primaryAction(r) }
     }
 
+    /// Double-click: play it (the list is the queue), or find it on SoundCloud if it isn't here yet.
     private func primaryAction(_ r: Row) {
-        if let p = r.state?.localPath, r.status == .downloaded {
-            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: p)])
+        if r.state?.localPath != nil, r.status == .downloaded {
+            let rows = sorted(store.rows(item, search: search).filter { filter.allows(bpm: $0.bestBPM, camelot: $0.file?.camelot) })
+            Playback.shared.play(r.id, list: rows.map(\.id))
         } else {
             findOnSoundCloud(store: store, browser: browser, id: r.id)
         }
@@ -605,6 +610,9 @@ struct TrackMenu: View {
                 Button("Show tracks that mix with \(r.camelot)") { filter.key = r.camelot; filter.compatible = true }
             }
             Divider()
+            if r.status == .downloaded, r.state?.localPath != nil {
+                Button("Play") { Playback.shared.play(id, list: [id]) }
+            }
             Button("Find on SoundCloud") { findOnSoundCloud(store: store, browser: browser, id: id) }
             if let p = r.state?.localPath {
                 Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: p)]) }

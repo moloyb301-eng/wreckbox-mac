@@ -22,6 +22,9 @@ import Network
 //   GET  /requests             status of the phone's requests
 //   POST /direct/join {"ssid", "pass"}   join the phone's Wi-Fi Direct group for a fast copy (DirectWiFi.swift)
 //   POST /direct/leave         back to the usual Wi-Fi
+//   GET  /playback             every device's playback ({"devices", "active", "server"}, Playback.swift)
+//   POST /playback/state       a phone's DeviceState
+//   POST /playback/command {"target", "action", "args"}   play / pause / toggle / next / previous / seek / volume / transfer
 
 final class PhoneSyncServer: ObservableObject {
     /// WRECKBOX_SYNC_PORT moves it for testing next to a running app.
@@ -100,6 +103,12 @@ final class PhoneSyncServer: ObservableObject {
         cancellables = []
         store.$state.debounce(for: .seconds(1), scheduler: DispatchQueue.main)
             .sink { [weak self] _ in self?.libraryChanged() }.store(in: &cancellables)
+        // New playlists / tracks (e.g. the morning Spotify sync): phones fetch the library again.
+        store.$library.dropFirst().debounce(for: .seconds(2), scheduler: DispatchQueue.main)
+            .sink { [weak self] lib in
+                guard let self, self.running, let lib else { return }
+                self.publish("library", ["builtAt": ISO8601DateFormatter().string(from: lib.builtAt), "playlists": lib.playlists.count])
+            }.store(in: &cancellables)
         store.$soulseek.sink { [weak self] _ in DispatchQueue.main.async { self?.updateRequests() } }.store(in: &cancellables)
         // While phones wait on requests, look at the downloader's progress every few seconds.
         Timer.publish(every: 5, on: .main, in: .common).autoconnect()
@@ -352,6 +361,26 @@ final class PhoneSyncServer: ObservableObject {
         case ("POST", "/direct/leave"):
             DirectWiFi.leave()
             return sendJSON(c, ["ok": true], keepAlive: false)
+        case ("GET", "/playback"):
+            DispatchQueue.main.async {
+                let snap = Playback.shared.snapshot
+                self.queue.async { self.sendJSON(c, snap, keepAlive: req.keepAlive) }
+            }
+            return
+        case ("POST", "/playback/state"):
+            guard let st = try? JSONDecoder().decode(DeviceState.self, from: req.body) else {
+                return send(c, status: "400 Bad Request", body: Data("bad state".utf8), keepAlive: req.keepAlive)
+            }
+            DispatchQueue.main.async { Playback.shared.update(st) }
+            return sendJSON(c, ["ok": true], keepAlive: req.keepAlive)
+        case ("POST", "/playback/command"):
+            let j = (try? JSONSerialization.jsonObject(with: req.body)) as? [String: Any] ?? [:]
+            guard let target = j["target"] as? String, let action = j["action"] as? String else {
+                return send(c, status: "400 Bad Request", body: Data("send target and action".utf8), keepAlive: req.keepAlive)
+            }
+            let args = j["args"] as? [String: Any] ?? [:]
+            DispatchQueue.main.async { Playback.shared.command(target: target, action: action, args: args) }
+            return sendJSON(c, ["ok": true], keepAlive: req.keepAlive)
         case ("POST", "/request"):
             let j = (try? JSONSerialization.jsonObject(with: req.body)) as? [String: Any] ?? [:]
             DispatchQueue.main.async {
@@ -443,6 +472,9 @@ final class PhoneSyncServer: ObservableObject {
         let list = events.filter { $0.seq > after }.map { ["seq": $0.seq, "event": $0.name, "data": $0.data] }
         sendJSON(c, ["seq": seq, "events": list, "reset": missed], keepAlive: keepAlive)
     }
+
+    /// Sends an event to every phone (from any thread).
+    func publish(_ event: String, _ obj: Any) { queue.async { self.broadcast(event, obj) } }
 
     /// Developer test (djlib phone-serve): a harmless event phones ignore.
     func testEvent() { queue.async { self.broadcast("test", ["t": Int(Date().timeIntervalSince1970)]) } }
