@@ -55,6 +55,7 @@ DEFAULTS = {
     "duration_tolerance_seconds": 4,
     "formats": "774/141/251/140/bestaudio",   # Premium Opus ~300k, AAC 256k, then the standard Opus 160k / AAC 128k
     "allow_videos": False,          # music videos often have intros / skits / other edits: official audio only
+    "require_login": True,          # without your Premium login, wait instead of downloading at ~150 kbps
 }
 
 VARIANT_WORDS = {"remix", "rmx", "live", "acapella", "acappella", "instrumental", "karaoke", "cover", "slowed",
@@ -107,9 +108,17 @@ def due_tracks(cfg: dict, records: dict) -> list[dict]:
     inbox = {p.stem for p in INBOX.glob("*") if p.is_file()} if INBOX.exists() else set()
     requested, rest = [], []
     for t in library["tracks"]:
-        if state.get(t["id"], {}).get("status") in ("downloaded", "ignored") or t["fileName"] in inbox:
-            continue
         rec = records.get(t["id"], {})
+        st = state.get(t["id"], {})
+        if t["fileName"] in inbox:
+            continue
+        # Upgrade: something it got in standard quality (no Premium login at the time) — fetch again, once.
+        if (st.get("status") == "downloaded" and st.get("source") == "youtube" and rec.get("status") == "done"
+                and (rec.get("kbps") or 0) < 200 and not rec.get("upgrade_tried") and cfg.get("require_login")):
+            requested.append(t)
+            continue
+        if st.get("status") in ("downloaded", "ignored"):
+            continue
         if t["id"] in requests and requests[t["id"]] > (rec.get("last_try") or ""):
             requested.append(t)
             continue
@@ -199,6 +208,10 @@ def find(yt: YTMusic, track: dict, cfg: dict) -> tuple[dict, float] | None:
 COOKIE_FILE = WORK_DIR / "cookies.txt"   # your YouTube login, copied from the browser once per pass (private to you)
 
 
+class NoLogin(Exception):
+    pass
+
+
 def refresh_cookies(cfg: dict) -> None:
     """Reads the browser's YouTube login once (macOS asks for the browser's keychain item — "Always Allow"
     keeps it quiet) and saves just the YouTube / Google cookies for this pass's downloads."""
@@ -211,6 +224,9 @@ def refresh_cookies(cfg: dict) -> None:
     for c in jar:
         if c.domain.endswith(("youtube.com", "google.com")):
             out.set_cookie(c)
+    if not any(c.name in ("SAPISID", "__Secure-3PSID", "LOGIN_INFO") for c in out):
+        # Empty when macOS refused the keychain prompt, or you're signed out of YouTube in that browser.
+        raise NoLogin(f"no YouTube login found in {cfg['browser']}")
     COOKIE_FILE.touch(mode=0o600, exist_ok=True)
     os.chmod(COOKIE_FILE, 0o600)
     out.save(ignore_discard=True, ignore_expires=True)
@@ -267,6 +283,8 @@ def fill(track: dict, yt: YTMusic, cfg: dict, records: dict) -> bool:
         mark(records, track, "not_found")
         return False
     r, s = hit
+    if records.get(track["id"], {}).get("status") == "done":
+        records[track["id"]]["upgrade_tried"] = True   # only one upgrade attempt per track
     try:
         got = download(r["videoId"], track["fileName"], cfg)
     except Exception as e:
@@ -289,7 +307,11 @@ def run_pass(cfg: dict, limit: int | None) -> int:
     try:
         refresh_cookies(cfg)
     except Exception as e:
-        log.info("Couldn't read your YouTube login from %s (%s) — downloading without Premium quality", cfg.get("browser"), e)
+        if cfg.get("require_login"):
+            log.info("⏸ YouTube login not available (%s). Waiting — in the keychain prompt choose Always Allow, "
+                     "and make sure you're signed in to YouTube in %s.", e, cfg.get("browser"))
+            return 0
+        log.info("Couldn't read your YouTube login (%s) — downloading in standard quality", e)
     yt = YTMusic()
     ok = 0
     for i, t in enumerate(todo):
@@ -382,11 +404,13 @@ def main() -> None:
     if not Path(FFMPEG).exists():
         raise SystemExit("ffmpeg is missing (brew install ffmpeg)")
     while True:
-        run_pass(cfg, getattr(a, "limit", None))
+        got = run_pass(cfg, getattr(a, "limit", None))
         if a.cmd == "once":
             break
-        log.info("Sleeping %d min", cfg["interval_minutes"])
-        sleep_until_requested(cfg["interval_minutes"] * 60)
+        waiting = got == 0 and "⏸" in (LOG_FILE.read_text(errors="ignore").splitlines() or [""])[-1]
+        minutes = 2 if waiting else cfg["interval_minutes"]
+        log.info("Sleeping %d min", minutes)
+        sleep_until_requested(minutes * 60)
 
 
 if __name__ == "__main__":

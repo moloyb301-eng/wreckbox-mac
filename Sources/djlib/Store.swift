@@ -335,6 +335,13 @@ final class LibraryStore: ObservableObject {
             return "Saved to _inbox (no matching track): \(file.lastPathComponent)"
         }
         let t = lib.tracks[i]
+        // A better YouTube copy (e.g. Premium quality after a standard one) replaces the old YouTube copy.
+        if source == "youtube", let old = state.tracks[t.id], old.status == .downloaded, old.source == "youtube",
+           let oldPath = old.localPath, FileManager.default.fileExists(atPath: oldPath) {
+            try? FileManager.default.trashItem(at: URL(fileURLWithPath: oldPath), resultingItemURL: nil)
+            analysis[oldPath] = nil
+            log("youtube", t.id, "replaced the earlier YouTube copy of \(describe(t.id))")
+        }
         var dest = Self.tracksDir.appendingPathComponent(t.fileName).appendingPathExtension(file.pathExtension.lowercased())
         var n = 2
         while FileManager.default.fileExists(atPath: dest.path) {
