@@ -138,7 +138,8 @@ final class PhoneSyncServer: ObservableObject {
         queue.async {
             let old = self.crate
             self.crate = snapshot
-            let added = snapshot.keys.filter { old[$0] == nil }
+            // A track whose file changed (e.g. upgraded to FLAC) counts as added again, so phones fetch the new one.
+            let added = snapshot.keys.filter { old[$0] == nil || old[$0]?.path != snapshot[$0]?.path }
             let removed = old.keys.filter { snapshot[$0] == nil }
             guard !old.isEmpty || !snapshot.isEmpty, !added.isEmpty || !removed.isEmpty else { return }
             self.broadcast("crate", ["added": added.compactMap { self.crateItem($0) }, "removed": removed, "count": snapshot.count])
