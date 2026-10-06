@@ -65,6 +65,8 @@ DEFAULTS = {
         "retry_after_hours": 24,     # wait before retrying a failed / not-found track
         "max_attempts": 5,           # stop retrying after this many passes
         "min_lossy_kbps": 256,       # reject MP3/AAC below this bitrate
+        "upgrade_after_days": 7,     # look again for a lossless edition of lossy tracks this often
+        "upgrades_per_pass": 25,     # lossy tracks re-searched per pass, after the new tracks
         "duration_tolerance_seconds": 5,
     },
 }
@@ -146,6 +148,36 @@ def missing_tracks(cfg: dict, sync: dict) -> list[dict]:
         out.sort(key=lambda t: rank.get(t["id"], len(rank)))   # stable: unranked keep newest-first
     out.sort(key=lambda t: t["id"] not in retried)               # explicit retries go first
     return out
+
+LOSSY_EXT = {"mp3", "aac", "ogg", "opus", "m4a"}
+
+
+def upgrade_tracks(cfg: dict, sync: dict) -> list[dict]:
+    """Tracks the app has only in lossy quality (MP3 / AAC from Soulseek, YouTube copies, Dolby AC-3…): due for a
+    lossless-only search every `upgrade_after_days`, so every track ends up in the best quality that exists."""
+    library = load_json(LIBRARY_ROOT / "library.json", {"tracks": []})
+    app_state = load_json(LIBRARY_ROOT / "state.json", {}).get("tracks", {})
+    quality = load_json(LIBRARY_ROOT / "_cache" / "quality.json", {})
+    days = cfg["sync"]["upgrade_after_days"]
+    out = []
+    for t in library["tracks"]:
+        st = app_state.get(t["id"], {})
+        path = st.get("localPath") or ""
+        if st.get("status") != "downloaded" or not path or in_inbox(t["fileName"]):
+            continue
+        q = quality.get(path)
+        if q is not None:
+            lossless = q.get("lossless") and not q.get("fromYouTube") and q.get("codec") not in ("E-AC3", "AC3")
+        else:   # not probed yet: judge by source and extension
+            lossless = st.get("source") != "youtube" and path.rsplit(".", 1)[-1].lower() not in LOSSY_EXT
+        if lossless:
+            continue
+        up = sync.get(t["id"], {}).get("upgrade", {})
+        if hours_since(up.get("last_try")) < days * 24:
+            continue
+        out.append(t)
+    out.sort(key=lambda t: sync.get(t["id"], {}).get("upgrade", {}).get("last_try") or "")   # never-tried first
+    return out[: cfg["sync"]["upgrades_per_pass"]]
 
 # ── Matching + ranking ───────────────────────────────────────────────────────
 
@@ -235,7 +267,7 @@ def file_matches(track: dict, path: str, duration: int | None, tol: int) -> bool
     return True
 
 
-def rank(track: dict, results, cfg: dict, loose: str | None = None) -> list[Candidate]:
+def rank(track: dict, results, cfg: dict, loose: str | None = None, lossless_only: bool = False) -> list[Candidate]:
     """`loose` = a custom query: its words must appear in the file path instead of the usual title/artist check."""
     s = cfg["sync"]
     cands: list[Candidate] = []
@@ -248,7 +280,8 @@ def rank(track: dict, results, cfg: dict, loose: str | None = None) -> list[Cand
             bitrate = attrs.get(AttributeKey.BITRATE.value)
             duration = attrs.get(AttributeKey.DURATION.value)
             q = quality_of(ext, bitrate, s["min_lossy_kbps"])
-            if q is None or f.filesize < 500_000:
+            # Lossless scores 13+ (ALAC 13, FLAC/WAV/AIFF 14–15); lossy tops out at 10 (320 kbps).
+            if q is None or f.filesize < 500_000 or (lossless_only and q < 13):
                 continue
             if loose:
                 hay = norm(" ".join(f.filename.replace("\\", "/").split("/")[-3:])).split()
@@ -362,7 +395,7 @@ class Syncer:
         await asyncio.sleep(self.cfg["sync"]["search_wait_seconds"])
         return list(req.results)
 
-    async def find(self, track: dict) -> tuple[list[Candidate], dict]:
+    async def find(self, track: dict, lossless_only: bool = False) -> tuple[list[Candidate], dict]:
         """Candidates for the first query that yields any, plus what was searched (for the app's results page)."""
         info = {"queries": [], "filesSeen": 0, "usersSeen": 0}
         custom = bool((load_json(OVERRIDES_FILE, {}).get(track["id"], {}).get("query") or "").strip())
@@ -372,7 +405,8 @@ class Syncer:
             info["filesSeen"] += sum(len(r.shared_items) for r in results)
             info["usersSeen"] += len(results)
             # A custom query is the user's own wording: trust it for the title/artist check, keep the quality rules.
-            cands = rank(track, results, self.cfg, loose=q if custom and len(info["queries"]) == 1 else None)
+            cands = rank(track, results, self.cfg, loose=q if custom and len(info["queries"]) == 1 else None,
+                         lossless_only=lossless_only)
             if cands:
                 return cands, info
         return [], info
@@ -458,6 +492,26 @@ class Syncer:
                   queries=info["queries"])
         return "failed"
 
+    async def upgrade(self, track: dict) -> str:
+        """Look for a lossless edition of a track the app only has in lossy quality; the app swaps it in."""
+        who = f"{', '.join(track['artists'])} – {track['title']}"
+        rec = self.sync.setdefault(track["id"], {})
+        up = rec.setdefault("upgrade", {})
+        up.update(last_try=now_iso(), attempts=up.get("attempts", 0) + 1)
+        cands, _ = await self.find(track, lossless_only=True)
+        if cands:
+            for c in cands[: self.cfg["sync"]["candidates_per_track"]]:
+                log.info("⇧ %s  ←  %s (lossless upgrade)", who, c.label)
+                dest = await self.download(track, c)
+                if dest:
+                    log.info("✓ %s → _inbox/%s (replaces the lossy copy)", who, dest.name)
+                    up.update(done=now_iso(), format=c.ext)
+                    rec.update(file=dest.name, source=f"{c.username}:{c.path}", format=c.ext, bitrate=c.bitrate, sizeBytes=c.size)
+                    save_json(SYNC_FILE, self.sync)
+                    return "upgraded"
+        save_json(SYNC_FILE, self.sync)
+        return "kept"
+
     async def run_pass(self, limit: int | None = None) -> dict:
         tracks = missing_tracks(self.cfg, self.sync)
         if (WORK_DIR / "queue.json").exists():
@@ -482,6 +536,29 @@ class Syncer:
 
         await asyncio.gather(*[worker() for _ in range(self.cfg["sync"]["max_concurrent"])])
         log.info("Pass finished: %(done)d downloaded, %(not_found)d not found, %(failed)d failed", counts)
+
+        # Then lossy tracks get another look for a FLAC edition (new tracks always come first).
+        if not limit:
+            ups = upgrade_tracks(self.cfg, self.sync)
+            if ups:
+                log.info("Upgrades: looking for lossless editions of %d lossy tracks", len(ups))
+                uq: asyncio.Queue = asyncio.Queue()
+                for t in ups:
+                    uq.put_nowait(t)
+                got = 0
+
+                async def up_worker():
+                    nonlocal got
+                    while not uq.empty():
+                        t = uq.get_nowait()
+                        try:
+                            got += await self.upgrade(t) == "upgraded"
+                        except Exception as e:
+                            log.exception("upgrade error on %s: %s", t["fileName"], e)
+
+                await asyncio.gather(*[up_worker() for _ in range(self.cfg["sync"]["max_concurrent"])])
+                log.info("Upgrades finished: %d of %d now lossless", got, len(ups))
+                counts["upgraded"] = got
         return counts
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
