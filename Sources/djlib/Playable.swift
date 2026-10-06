@@ -10,8 +10,9 @@ enum Playable {
 
     /// Needs converting before Rekordbox can use it.
     static func needsConversion(_ path: String, quality: FileQuality?) -> Bool {
-        unplayableExtensions.contains((path as NSString).pathExtension.lowercased()) || quality?.unplayable == true
-            || ((path as NSString).pathExtension.lowercased() == "m4a" && (FileQuality.probe(path)?.unplayable ?? false))
+        if unplayableExtensions.contains((path as NSString).pathExtension.lowercased()) { return true }
+        if let q = quality, q.channels != nil { return q.unplayable }
+        return FileQuality.probe(path)?.unplayable ?? false   // older cache entries don't know the channel count
     }
 
     /// Track id → what a converted file was ({"codec": "DOLBY" | "OGG" …, "kbps": 768}); _cache/converted.json.
@@ -23,6 +24,8 @@ enum Playable {
     /// Notes the source format of `path` (before converting it) for track `id`.
     static func recordSource(_ path: String, id: String) {
         let q = FileQuality.probe(path)
+        // A lossless surround source mixed down to stereo FLAC is still truly lossless: nothing to note.
+        if q?.lossless == true, q?.codec != "E-AC3", q?.codec != "AC3" { return }
         let ext = (path as NSString).pathExtension.uppercased()
         let codec = q?.unplayable == true ? "DOLBY" : (q?.codec ?? ext)
         var all = converted
@@ -69,7 +72,8 @@ extension LibraryStore {
             state.tracks[id] = s
             if var a = analysis.removeValue(forKey: path) { a.path = flac; analysis[flac] = a }
             quality[path] = nil
-            try? FileManager.default.trashItem(at: URL(fileURLWithPath: path), resultingItemURL: nil)
+            // A surround .flac is replaced in place (same name); only a different original goes to the Trash.
+            if flac != path { try? FileManager.default.trashItem(at: URL(fileURLWithPath: path), resultingItemURL: nil) }
             log("convert", id, "\(describe(id)): \((path as NSString).pathExtension.uppercased()) → FLAC so Rekordbox can play it")
             save()
             await analyseAndTag(id, path: flac)

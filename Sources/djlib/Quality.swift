@@ -19,10 +19,10 @@ struct FileQuality: Codable, Equatable {
     /// Such files are not truly lossless (lossless = false), so the Soulseek FLAC re-check still looks for them.
     var convertedFrom: String?
 
-    /// Dolby surround (E-AC-3 / AC-3) — Rekordbox and CDJs can't play it.
-    var unplayable: Bool { codec == "E-AC3" || codec == "AC3" }
+    /// Dolby (E-AC-3 / AC-3) or any surround (more than 2 channels) — Rekordbox and CDJs can't play it.
+    var unplayable: Bool { codec == "E-AC3" || codec == "AC3" || (channels ?? 2) > 2 }
     var label: String {
-        if unplayable { return "\(codec)\((channels ?? 2) > 2 ? " 5.1" : "")" }
+        if unplayable { return "\(codec)\((channels ?? 2) > 2 ? " \(channels! - 1).1" : "")" }
         if let c = convertedFrom { return kbps.map { "\(c) \($0)" } ?? c }
         if lossless && !fromYouTube { return (bits ?? 16) > 16 ? "\(codec) \(bits!)" : codec }
         return kbps.map { "\(codec) \($0)" } ?? codec
