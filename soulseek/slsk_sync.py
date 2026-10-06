@@ -158,6 +158,8 @@ def upgrade_tracks(cfg: dict, sync: dict) -> list[dict]:
     library = load_json(LIBRARY_ROOT / "library.json", {"tracks": []})
     app_state = load_json(LIBRARY_ROOT / "state.json", {}).get("tracks", {})
     quality = load_json(LIBRARY_ROOT / "_cache" / "quality.json", {})
+    # Dolby / OGG files the app converted to FLAC for Rekordbox: FLAC on disk, lossy at heart (track id → source).
+    converted = load_json(LIBRARY_ROOT / "_cache" / "converted.json", {})
     days = cfg["sync"]["upgrade_after_days"]
     out = []
     for t in library["tracks"]:
@@ -170,7 +172,7 @@ def upgrade_tracks(cfg: dict, sync: dict) -> list[dict]:
             lossless = q.get("lossless") and not q.get("fromYouTube") and q.get("codec") not in ("E-AC3", "AC3")
         else:   # not probed yet: judge by source and extension
             lossless = st.get("source") != "youtube" and path.rsplit(".", 1)[-1].lower() not in LOSSY_EXT
-        if lossless:
+        if lossless and t["id"] not in converted:
             continue
         up = sync.get(t["id"], {}).get("upgrade", {})
         if hours_since(up.get("last_try")) < days * 24:
