@@ -335,20 +335,26 @@ final class LibraryStore: ObservableObject {
             return "Saved to _inbox (no matching track): \(file.lastPathComponent)"
         }
         let t = lib.tracks[i]
-        // A better YouTube copy (e.g. Premium quality after a standard one) replaces the old YouTube copy.
-        if source == "youtube", let old = state.tracks[t.id], old.status == .downloaded, old.source == "youtube",
-           let oldPath = old.localPath, FileManager.default.fileExists(atPath: oldPath) {
-            try? FileManager.default.trashItem(at: URL(fileURLWithPath: oldPath), resultingItemURL: nil)
-            analysis[oldPath] = nil
-            log("youtube", t.id, "replaced the earlier YouTube copy of \(describe(t.id))")
+        // Best quality wins: a better YouTube copy (Premium after standard) replaces the old YouTube copy, and a
+        // lossless Soulseek edition (slsk-sync's upgrade pass) replaces any lossy copy — MP3, AAC, YouTube, Dolby.
+        if let old = state.tracks[t.id], old.status == .downloaded, let oldPath = old.localPath, oldPath != file.path,
+           FileManager.default.fileExists(atPath: oldPath) {
+            // (Apple Lossless arrives as .m4a, so ask the file itself.)
+            let upgrade = source == "soulseek" && !isTrueLossless(oldPath, source: old.source)
+                && (FileQuality.probe(file.path).map { $0.lossless && !$0.unplayable } ?? Self.losslessExtensions.contains(file.pathExtension.lowercased()))
+            if (source == "youtube" && old.source == "youtube") || upgrade {
+                try? FileManager.default.trashItem(at: URL(fileURLWithPath: oldPath), resultingItemURL: nil)
+                analysis[oldPath] = nil
+                quality[oldPath] = nil
+                log(source, t.id, upgrade ? "lossless edition replaces the lossy copy of \(describe(t.id))"
+                                          : "replaced the earlier YouTube copy of \(describe(t.id))")
+            }
         }
-        var dest = Self.tracksDir.appendingPathComponent(t.fileName).appendingPathExtension(file.pathExtension.lowercased())
-        var n = 2
-        while FileManager.default.fileExists(atPath: dest.path) {
-            dest = Self.tracksDir.appendingPathComponent("\(t.fileName) (\(n))").appendingPathExtension(file.pathExtension.lowercased()); n += 1
-        }
+        // Straight into its genre folder (Tracks/<genre>/), see Organise.swift.
+        let dest = destination(for: t.id, ext: file.pathExtension)
+            ?? Self.tracksDir.appendingPathComponent(t.fileName).appendingPathExtension(file.pathExtension.lowercased())
         do {
-            try FileManager.default.createDirectory(at: Self.tracksDir, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
             try FileManager.default.moveItem(at: file, to: dest)
         } catch {
             log("import failed", t.id, "\(file.lastPathComponent): \(error.localizedDescription)")
@@ -356,6 +362,7 @@ final class LibraryStore: ObservableObject {
             return "Import failed: \(error.localizedDescription)"
         }
         state.tracks[t.id] = TrackState(status: .downloaded, localPath: dest.path, source: source, updatedAt: Date())
+        save()   // record the move now: if the app quits during analysis, the file isn't left unaccounted for
         let moved = await readTrack(dest)
         analysis[dest.path] = await Task.detached(priority: .utility) { Analyzer.analyze(moved, libraryTrackID: t.id) }.value
         Analyzer.saveCache(analysis)
@@ -414,6 +421,9 @@ final class LibraryStore: ObservableObject {
     @Published var youtube = YouTubeStatus()
     /// File path → format / bit rate, for the Quality column (see Quality.swift).
     @Published var quality: [String: FileQuality] = [:]
+    /// (analysis count, sorted energies) for energyLevel().
+    var energyRankCache: (count: Int, values: [Double])?
+    var familyCountCache: (key: Int, counts: [String: Int])?
     /// The yt-fill process this app started (static so the app delegate can stop it on quit).
     nonisolated(unsafe) static var ytProcess: Process?
     /// The sync process this app started (static so the app delegate can stop it on quit).
@@ -547,6 +557,20 @@ final class LibraryStore: ObservableObject {
         .sorted { $0.1 < $1.1 }.prefix(12).map(\.0)
     }
 
+    static let losslessExtensions: Set<String> = ["flac", "wav", "aif", "aiff", "alac"]
+
+    /// The file slsk-sync last delivered for a track (_soulseek/sync.json).
+    static func slskDelivered(_ id: String) -> String? {
+        let sync = (try? JSONSerialization.jsonObject(with: Data(contentsOf: AppPaths.slskWorkDir.appendingPathComponent("sync.json")))) as? [String: [String: Any]]
+        return sync?[id]?["file"] as? String
+    }
+
+    /// Real lossless (not a YouTube copy decoded to FLAC, not Dolby surround).
+    func isTrueLossless(_ path: String, source: String?) -> Bool {
+        if let q = quality[path] { return q.lossless && !q.fromYouTube && !q.unplayable }
+        return source != "youtube" && Self.losslessExtensions.contains((path as NSString).pathExtension.lowercased())
+    }
+
     func importInbox() async {
         guard library != nil, busy == nil else { return }
         let files = (try? FileManager.default.contentsOfDirectory(at: Self.inboxDir, includingPropertiesForKeys: [.fileSizeKey],
@@ -561,7 +585,9 @@ final class LibraryStore: ObservableObject {
             let base = stem.replacingOccurrences(of: #" \(\d+\)$"#, with: "", options: .regularExpression)
             let id = byFileName[stem] ?? byFileName[base]
             if let id, !youtube.got.contains(id) { refreshYouTube() }   // a yt-fill download that just landed
-            let source = id.map { youtube.got.contains($0) } == true ? "youtube" : "soulseek"
+            // slsk-sync records the file it delivered; that wins over "YouTube got this track once" (lossless upgrades).
+            let fromSlsk = id.map { Self.slskDelivered($0) == f.lastPathComponent } == true
+            let source = !fromSlsk && id.map { youtube.got.contains($0) } == true ? "youtube" : "soulseek"
             _ = await importDownloaded(f, source: source, trackID: id)
         }
     }

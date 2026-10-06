@@ -9,7 +9,7 @@ usage:
   djlib sync-playlists                                    both of the above (runs every morning at 07:00)
   djlib bpm --playlists "A,B" [--min 120 --max 145]       BPM list (ascending) for the given playlists
   djlib analyze [file or folder ...]                      BPM + key (Camelot) of local audio files
-  djlib genres                                            genre per track, cross-checked from several sources
+  djlib genres [--lastfm-key KEY]                         genre per track, cross-checked from several sources
   djlib inventory [folder ...]                            read tags from local audio files (read-only)
 """
 

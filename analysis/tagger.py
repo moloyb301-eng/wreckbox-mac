@@ -21,7 +21,7 @@ import urllib.request
 import mutagen
 from mutagen.aiff import AIFF
 from mutagen.flac import FLAC, Picture
-from mutagen.id3 import APIC, ID3, TBPM, TCON, TDRC, TIT2, TKEY, TPE1, TPE2, TALB, TSRC, ID3NoHeaderError
+from mutagen.id3 import APIC, COMM, ID3, TBPM, TCON, TDRC, TIT2, TKEY, TPE1, TPE2, TALB, TSRC, ID3NoHeaderError
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4, MP4Cover, MP4FreeForm
 from mutagen.wave import WAVE
@@ -74,6 +74,9 @@ def tag_id3(tags, job, cover):
     put(TBPM, bpm_text(job))
     put(TKEY, key_name(job))
     put(TSRC, job.get("isrc"))
+    if job.get("comment"):   # "Energy 7" — Rekordbox's Comments column
+        tags.delall("COMM")
+        tags.add(COMM(encoding=3, lang="eng", desc="", text=job["comment"]))
     if cover:
         tags.delall("APIC")
         tags.add(APIC(encoding=3, mime=mime(cover), type=3, desc="Cover", data=cover))
@@ -92,6 +95,7 @@ def tag_vorbis(f, job, cover):
     put("bpm", bpm_text(job))
     put("initialkey", key_name(job))
     put("isrc", job.get("isrc"))
+    put("comment", job.get("comment"))
     if cover:
         f.clear_pictures()
         p = Picture()
@@ -116,6 +120,7 @@ def tag_mp4(f, job, cover):
         t["----:com.apple.iTunes:initialkey"] = [MP4FreeForm(key_name(job).encode())]
     if job.get("isrc"):
         t["----:com.apple.iTunes:ISRC"] = [MP4FreeForm(job["isrc"].encode())]
+    put("\xa9cmt", job.get("comment"))
     if cover:
         fmt = MP4Cover.FORMAT_PNG if mime(cover) == "image/png" else MP4Cover.FORMAT_JPEG
         t["covr"] = [MP4Cover(cover, imageformat=fmt)]

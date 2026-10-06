@@ -77,6 +77,7 @@ extension LibraryStore {
         }
         busy = nil
         save()
+        await rebuildGenresAndOrganise()   // genres for the new tracks (cached lookups make this quick), folders, tags
     }
 
     /// Re-reads library.json only (state and analysis stay as they are in memory).

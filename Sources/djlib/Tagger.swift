@@ -14,6 +14,7 @@ struct TagJob: Encodable {
     var key: String?
     var isrc: String?
     var cover: String?
+    var comment: String?       // "Energy 7" (1–10), shown in Rekordbox's Comments column
 }
 
 struct TagResult: Decodable {
@@ -66,7 +67,8 @@ extension LibraryStore {
         let cached = ArtworkLoader.dir.appendingPathComponent(ArtworkLoader.fileStem(t.id) + ".jpg").path
         return TagJob(path: path, title: t.title, artists: t.artists, album: t.album, year: t.year,
                       genre: r.genre.isEmpty ? nil : r.genre, bpm: r.file?.bpm, key: r.file?.key, isrc: t.isrc,
-                      cover: t.artworkURL ?? (FileManager.default.fileExists(atPath: cached) ? cached : nil))
+                      cover: t.artworkURL ?? (FileManager.default.fileExists(atPath: cached) ? cached : nil),
+                      comment: energyLevel(r.file?.energy).map { "Energy \($0)" })
     }
 
     /// Writes tags into the files of the given tracks (all downloaded tracks when `ids` is nil).

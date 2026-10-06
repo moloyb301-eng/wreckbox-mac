@@ -20,6 +20,8 @@ import Network
 //   POST /prepare {"ids", "q"} make the copies for the phone's next tracks ahead of time
 //   POST /request {"id"} or {"artist", "title", "query"}   look for a track on Soulseek now
 //   GET  /requests             status of the phone's requests
+//   POST /direct/join {"ssid", "pass"}   join the phone's Wi-Fi Direct group for a fast copy (DirectWiFi.swift)
+//   POST /direct/leave         back to the usual Wi-Fi
 
 final class PhoneSyncServer: ObservableObject {
     /// WRECKBOX_SYNC_PORT moves it for testing next to a running app.
@@ -312,6 +314,7 @@ final class PhoneSyncServer: ObservableObject {
         case .denied: return send(c, status: "403 Forbidden", body: Data("not paired".utf8), keepAlive: req.keepAlive)
         case .ok: break
         }
+        if peer.contains(DirectWiFi.subnet) { DirectWiFi.touch() }
         let path = req.path
         switch (req.method, path) {
         case ("GET", "/info"):
@@ -339,6 +342,16 @@ final class PhoneSyncServer: ObservableObject {
                 DispatchQueue.main.async { Transcoder.shared.make(id, source: src, q, tag: self.store?.tagJob(id)) }
             }
             return sendJSON(c, ["ok": true], keepAlive: req.keepAlive)
+        case ("POST", "/direct/join"):
+            let j = (try? JSONSerialization.jsonObject(with: req.body)) as? [String: Any] ?? [:]
+            guard let ssid = j["ssid"] as? String, let pass = j["pass"] as? String, DirectWiFi.valid(ssid: ssid, pass: pass) else {
+                return send(c, status: "400 Bad Request", type: "application/json", body: Data(#"{"error":"Send a DIRECT-… network and its passphrase."}"#.utf8), keepAlive: req.keepAlive)
+            }
+            DirectWiFi.join(ssid: ssid, pass: pass)
+            return sendJSON(c, ["ok": true, "port": Int(Self.port)], keepAlive: false)
+        case ("POST", "/direct/leave"):
+            DirectWiFi.leave()
+            return sendJSON(c, ["ok": true], keepAlive: false)
         case ("POST", "/request"):
             let j = (try? JSONSerialization.jsonObject(with: req.body)) as? [String: Any] ?? [:]
             DispatchQueue.main.async {

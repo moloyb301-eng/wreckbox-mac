@@ -48,6 +48,12 @@ struct DJApp: App {
                     PlaylistSync.installAgent()
                     if store.youtubeFillEnabled { store.startYouTubeFill() }
                     if PlaylistSync.due { Task { await store.syncPlaylists() } }   // missed this morning's run
+                    // `djlib organise` (or a request left by it) asks the running app to file the crate.
+                    let request = libraryRoot.appendingPathComponent("_cache/organise.request")
+                    if FileManager.default.fileExists(atPath: request.path) {
+                        try? FileManager.default.removeItem(at: request)
+                        Task { await store.rebuildGenresAndOrganise() }
+                    }
                 }
                 .frame(minWidth: 980, minHeight: 620)
                 .preferredColorScheme(.dark)
@@ -163,6 +169,9 @@ struct LibraryActions: View {
             PillButton(label: "Sync playlists", icon: "arrow.triangle.2.circlepath") { Task { await store.syncPlaylists() } }
                 .disabled(store.busy != nil)
                 .help("Bring in tracks you added to your Spotify playlists (also runs every morning at 7:00)")
+            PillButton(label: "Genres & folders", icon: "folder") { Task { await store.rebuildGenresAndOrganise() } }
+                .disabled(store.busy != nil)
+                .help("Work out genres (Deezer, Last.fm, your playlists), file every track into Tracks/<genre>/ and write genre + \"Energy 1–10\" into the files")
             PillButton(label: "Rescan & analyse", icon: "waveform.badge.magnifyingglass") { Task { await store.rescan() } }
                 .disabled(store.busy != nil)
                 .help("Read your music folders, relink moved files and analyse BPM / key / energy with Essentia")

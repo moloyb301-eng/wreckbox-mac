@@ -13,39 +13,61 @@ struct GenreInfo: Codable {
 enum GenreTool {
     static let cacheFile = libraryRoot.appendingPathComponent("_cache/genres.json")
     static let deezerCacheFile = libraryRoot.appendingPathComponent("_cache/deezer_genres.json")
-    static let electronic = "Dance / Electronic"
+    static let electronic = "Electronic"
 
-    /// DJ genre list. Order matters: first match wins, so specific names come before general ones.
+    /// DJ genre families — also the folder names inside Tracks/ (no "/" in them). Based on Beatport's genre list
+    /// (house / techno / bass / mainstage …, plus its open-format Hip-Hop, R&B, Pop, Latin, African) and split
+    /// the way this library needs it (desi hip-hop, Bollywood, Punjabi, desi indie). Order matters: first match
+    /// wins, so specific names come before general ones.
     static let rules: [(keys: [String], genre: String)] = [
-        (["afro house", "afro-house", "afro tech"], "Afro House"),
-        (["amapiano"], "Amapiano"),
-        (["tech house"], "Tech House"),
-        (["techno/house"], "House"),
-        (["deep house", "progressive house", "melodic house", "house"], "House"),
-        (["techno"], "Techno"),
-        (["drum & bass", "drum and bass", "drum n bass", "dnb", "jungle"], "Drum & Bass"),
-        (["uk garage", "ukg", "garage", "bassline", "2-step"], "UK Garage"),
-        (["dubstep", "riddim", "bass music", "trap & bass", "future bass", "brostep"], "Bass / Dubstep"),
-        (["baile", "funk carioca", "brazilian bass", "brazilian funk", "brazilian music", "funk brasileiro"], "Baile Funk / Brazilian"),
-        (["reggaeton", "latin", "dembow", "urbano"], "Latin"),
-        (["afrobeats", "afrobeat", "african music", "afropop", "afro"], "Afrobeats"),
+        (["afro house", "afro-house", "afro tech", "afro melodic", "3step"], "Afro House"),
+        (["amapiano", "gqom"], "Amapiano"),
+        (["desi hip hop", "desi hip-hop", "desi rap", "hindi rap", "hindi hip hop", "indian hip hop", "indian hip-hop", "pakistani hip hop",
+          "urdu rap", "urdu hip hop", "gully rap", "dhh"], "Desi Hip-Hop"),
         (["punjabi", "bhangra"], "Punjabi"),
-        (["bollywood", "filmi", "hindi", "indian music", "desi", "indian", "sufi", "ghazal", "qawwali"], "Bollywood / Indian"),
-        (["k-pop", "kpop", "korean", "asian music", "j-pop"], "K-Pop / Asian"),
-        (["rap", "hip hop", "hip-hop", "trap"], "Hip-Hop / Rap"),
-        (["r&b", "rnb", "soul", "funk"], "R&B / Soul"),
-        (["lo-fi", "lofi", "chill", "downtempo", "ambient"], "Chill / Lo-fi"),
-        (["edm", "electro", "electronic", "dance", "big room", "trance", "hardstyle"], electronic),
-        (["indie", "alternative", "singer & songwriter", "singer-songwriter"], "Indie / Alternative"),
+        (["indian indie", "hindi indie", "urdu indie", "pakistani indie", "desi indie", "indie hindi", "indian singer-songwriter", "pakistani pop", "coke studio"], "Desi Indie"),
+        (["bollywood", "filmi", "hindi", "indian music", "indian pop", "desi", "indian", "sufi", "ghazal", "qawwali", "tollywood", "kollywood", "tamil", "telugu", "bengali", "marathi"], "Bollywood"),
+        (["drum & bass", "drum and bass", "drum n bass", "dnb", "jungle", "liquid funk"], "Drum & Bass"),
+        (["uk garage", "ukg", "garage", "bassline", "2-step", "2step", "speed garage"], "UK Garage"),
+        (["techno/house"], "House"),   // Deezer's combined label: mostly house
+        (["big room", "progressive house", "electro house", "mainstage", "complextro", "edm"], "Mainstage & EDM"),
+        (["techno"], "Techno"),
+        (["tech house", "deep house", "melodic house", "organic house", "afro deep", "nu disco", "disco house", "jackin", "soulful house", "minimal",
+          "house"], "House"),
+        (["dubstep", "riddim", "bass music", "trap & bass", "future bass", "brostep", "midtempo", "bass"], "Bass"),
+        (["festival", "trance", "hardstyle", "dance pop", "dance-pop"], "Mainstage & EDM"),
+        (["baile", "funk carioca", "brazilian bass", "brazilian funk", "brazilian music", "funk brasileiro", "phonk"], "Brazilian Funk"),
+        (["reggaeton", "latin", "dembow", "urbano", "cumbia", "salsa", "bachata"], "Latin"),
+        (["afrobeats", "afrobeat", "african music", "afropop", "afro pop", "afro"], "Afrobeats"),
+        (["k-pop", "kpop", "korean", "asian music", "j-pop"], "K-Pop"),
+        (["rap", "hip hop", "hip-hop", "trap", "grime", "drill"], "Hip-Hop & Rap"),
+        (["r&b", "rnb", "soul", "funk", "neo soul"], "R&B & Soul"),
+        (["lo-fi", "lofi", "chill", "downtempo", "ambient", "chillout", "chillwave"], "Chill & Downtempo"),
+        (["electronic", "electronica", "electro", "dance", "idm"], electronic),
+        (["indie", "alternative", "singer & songwriter", "singer-songwriter", "folk", "bedroom pop"], "Indie & Alternative"),
         (["rock", "metal", "punk"], "Rock"),
-        (["soundtrack", "films/games", "film", "score"], "Soundtrack"),
-        (["jazz", "blues"], "Jazz / Blues"),
+        (["reggae", "dancehall"], "Reggae & Dancehall"),
+        (["soundtrack", "films/games", "film scores", "score"], "Soundtrack"),
+        (["jazz", "blues"], "Jazz & Blues"),
         (["classical"], "Classical"),
-        (["reggae", "dancehall"], "Reggae / Dancehall"),
         (["pop"], "Pop"),
     ]
-    static let electronicChildren: Set<String> = ["Afro House", "Amapiano", "Tech House", "House", "Techno", "Drum & Bass",
-                                                   "UK Garage", "Bass / Dubstep", "Baile Funk / Brazilian"]
+    static let electronicChildren: Set<String> = ["Afro House", "Amapiano", "House", "Techno", "Drum & Bass", "UK Garage", "Bass",
+                                                   "Mainstage & EDM", "Brazilian Funk", "Chill & Downtempo"]
+    /// Families that refine Bollywood / Indian (a Deezer "Bollywood / Indian" vote also supports them).
+    static let desiChildren: Set<String> = ["Desi Hip-Hop", "Punjabi", "Desi Indie"]
+    /// A general vote also backs the more specific family another source names (Deezer "Rap/Hip Hop" + Last.fm
+    /// "desi hip hop" → Desi Hip-Hop), instead of the two competing.
+    static let refinements: [String: Set<String>] = [
+        electronic: electronicChildren,
+        "Bollywood": desiChildren,
+        "Hip-Hop & Rap": ["Desi Hip-Hop", "Brazilian Funk"],
+        "House": ["Afro House", "Amapiano", "UK Garage"],
+        "Afrobeats": ["Afro House", "Amapiano"],
+        "Indie & Alternative": ["Desi Indie"],
+        "Pop": ["Bollywood", "Desi Indie", "Punjabi", "K-Pop", "Latin", "Afrobeats", "Mainstage & EDM"],
+    ]
+    static var specific: Set<String> { electronicChildren.union(desiChildren).union(["Bollywood"]) }
     static var allGenres: [String] { var seen = Set<String>(); return rules.map(\.genre).filter { seen.insert($0).inserted } }
 
     static func djGenre(_ raw: String) -> String? {
@@ -71,6 +93,7 @@ enum GenreTool {
     // MARK: Build
 
     static func run(args: [String]) async throws {
+        if let i = args.firstIndex(of: "--lastfm-key"), i + 1 < args.count { LastFM.apiKey = args[i + 1] }
         let dec = JSONDecoder()
         dec.dateDecodingStrategy = .iso8601
         let lib = try dec.decode(Library.self, from: Data(contentsOf: libraryRoot.appendingPathComponent("library.json")))
@@ -104,16 +127,16 @@ enum GenreTool {
         try FileManager.default.createDirectory(at: cacheFile.deletingLastPathComponent(), withIntermediateDirectories: true)
         try JSONEncoder().encode(deezer).write(to: deezerCacheFile)
 
-        // 2. Gather raw votes per track.
-        let fileGenre: [String: String] = Dictionary(analysis.values.compactMap { a in
-            guard let id = a.libraryTrackID, let g = (try? readGenreTag(a.path)) ?? nil else { return nil }
-            return (id, g)
-        }, uniquingKeysWith: { a, _ in a })
+        // 1b. Last.fm listener tags (track, else artist) — detailed sub-genres incl. desi / electronic.
+        let lastfm = await LastFM.tags(for: lib.tracks)
+        _ = analysis
+
+        // 2. Gather raw votes per track. (The genre inside the files isn't used: WreckBox writes it itself.)
         var raw: [String: [String: [String]]] = [:]
         for t in lib.tracks {
             var s: [String: [String]] = [:]
             if let d = deezer[t.id], !d.isEmpty { s["deezer"] = d }
-            if let f = fileGenre[t.id] { s["file tag"] = [f] }
+            if let l = lastfm[t.id], !l.isEmpty { s["lastfm"] = l }
             let pls = t.playlists.filter { playlistGenre($0) != nil }
             if !pls.isEmpty { s["playlist"] = pls }
             raw[t.id] = s
@@ -152,19 +175,24 @@ enum GenreTool {
     static func decide(_ sources: [String: [String]], artistVote: String?) -> GenreInfo {
         var support: [String: Set<String>] = [:]
         for (src, vals) in sources where src != "artist" {
-            for g in Set(vals.compactMap(djGenre)) { support[g, default: []].insert(src) }
+            let mapped = vals.compactMap(djGenre)
+            // Last.fm tags come most-used first: take the most specific of the top few, not all of them.
+            let picked = src == "lastfm" ? (lastfmGenre(vals).map { [$0] } ?? [])
+                                          : Array(Set(mapped))
+            for g in picked { support[g, default: []].insert(src) }
         }
-        if let generic = support[electronic] {
-            for g in support.keys where electronicChildren.contains(g) { support[g]!.formUnion(generic) }
+        for (parent, children) in refinements {
+            guard let generic = support[parent] else { continue }
+            for g in support.keys where children.contains(g) { support[g]!.formUnion(generic) }
         }
         if let a = artistVote, support[a] != nil { support[a]!.insert("artist") }
-        if let a = artistVote, a == electronic {
-            for g in support.keys where electronicChildren.contains(g) { support[g]!.insert("artist") }
+        if let a = artistVote, let children = refinements[a] {
+            for g in support.keys where children.contains(g) { support[g]!.insert("artist") }
         }
-        let priority = ["file tag": 4, "playlist": 3, "deezer": 2, "artist": 1]
+        let priority = ["lastfm": 4, "playlist": 3, "deezer": 2, "artist": 1]
         let best = support.max { a, b in
             if a.value.count != b.value.count { return a.value.count < b.value.count }
-            let sa = electronicChildren.contains(a.key) ? 1 : 0, sb = electronicChildren.contains(b.key) ? 1 : 0
+            let sa = specific.contains(a.key) ? 1 : 0, sb = specific.contains(b.key) ? 1 : 0
             if sa != sb { return sa < sb }
             return (a.value.map { priority[$0] ?? 0 }.max() ?? 0) < (b.value.map { priority[$0] ?? 0 }.max() ?? 0)
         }
@@ -173,6 +201,20 @@ enum GenreTool {
         }
         if let a = artistVote { return GenreInfo(genre: a, confidence: "guess", sources: sources) }
         return GenreInfo(genre: nil, confidence: "unknown", sources: sources)
+    }
+
+    /// One family from a track's Last.fm tags (most-used first). Tags combine: "Indian" + "indie pop" is Desi
+    /// Indie, "Pakistani" + "rap" is Desi Hip-Hop — on their own they'd read as Bollywood / Hip-Hop.
+    static func lastfmGenre(_ tags: [String]) -> String? {
+        let top = tags.prefix(6).map { " \($0.lowercased()) " }
+        let has: ([String]) -> Bool = { keys in top.contains { t in keys.contains { t.contains($0) } } }
+        if has(["indian", "india", "pakistani", "pakistan", "hindi", "urdu", "desi", "bollywood"]) {
+            if has(["rap", "hip hop", "hip-hop", "trap", "drill"]) { return "Desi Hip-Hop" }
+            if has(["punjabi", "bhangra"]) { return "Punjabi" }
+            if has(["indie", "acoustic", "singer-songwriter", "singer songwriter", "folk", "alternative", "lo-fi", "lofi", "bedroom"]) { return "Desi Indie" }
+        }
+        let mapped = tags.compactMap(djGenre)
+        return mapped.prefix(4).first { specific.contains($0) } ?? mapped.first
     }
 
     static func deezerAlbumID(_ t: LibraryTrack) async -> Int? {
