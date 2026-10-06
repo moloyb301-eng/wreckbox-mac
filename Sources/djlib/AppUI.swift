@@ -47,6 +47,10 @@ struct DJApp: App {
                 .onAppear { browser.store = store; phoneSync.attach(store); store.startInboxWatcher(); store.refreshSoulseek(); updater.start(); remote.server = phoneSync; remote.store = store; remote.resume()
                     PlaylistSync.installAgent()
                     if store.youtubeFillEnabled { store.startYouTubeFill() }
+                    Task {
+                        await store.convertUnplayable()   // OGG / Opus / Dolby files → FLAC Rekordbox can play
+                        await store.analyseMissing()      // and anything still without BPM / key / energy
+                    }
                     if PlaylistSync.due { Task { await store.syncPlaylists() } }   // missed this morning's run
                     // `djlib organise` (or a request left by it) asks the running app to file the crate.
                     let request = libraryRoot.appendingPathComponent("_cache/organise.request")

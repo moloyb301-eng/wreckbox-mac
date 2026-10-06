@@ -1,0 +1,81 @@
+import Foundation
+
+// Rekordbox and CDJs can't play OGG Vorbis, Opus, WMA or Dolby surround (E-AC-3 / AC-3). Those are converted to
+// FLAC (stereo, 16-bit) with ffmpeg: FLAC stores the decoded audio exactly, so nothing more is lost on top of the
+// source's own quality. Done for new downloads as they arrive, and for files already in the crate.
+
+enum Playable {
+    static let ffmpeg = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"].first { FileManager.default.isExecutableFile(atPath: $0) }
+    static let unplayableExtensions: Set<String> = ["ogg", "oga", "opus", "webm", "wma"]
+
+    /// Needs converting before Rekordbox can use it.
+    static func needsConversion(_ path: String, quality: FileQuality?) -> Bool {
+        unplayableExtensions.contains((path as NSString).pathExtension.lowercased()) || quality?.unplayable == true
+            || ((path as NSString).pathExtension.lowercased() == "m4a" && (FileQuality.probe(path)?.unplayable ?? false))
+    }
+
+    /// Converts to a FLAC next to the original; returns its path (the original is left for the caller).
+    static func convertToFLAC(_ path: String) -> String? {
+        guard let ffmpeg else { return nil }
+        let out = (path as NSString).deletingPathExtension + ".flac"
+        let tmp = out + ".part.flac"
+        try? FileManager.default.removeItem(atPath: tmp)
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: ffmpeg)
+        p.arguments = ["-v", "error", "-y", "-i", path, "-vn", "-map", "0:a:0", "-ac", "2", "-c:a", "flac", "-sample_fmt", "s16", tmp]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return nil }
+        p.waitUntilExit()
+        guard p.terminationStatus == 0, FileManager.default.fileExists(atPath: tmp) else { try? FileManager.default.removeItem(atPath: tmp); return nil }
+        try? FileManager.default.removeItem(atPath: out)
+        do { try FileManager.default.moveItem(atPath: tmp, toPath: out) } catch { return nil }
+        return out
+    }
+}
+
+extension LibraryStore {
+    /// Converts crate files Rekordbox can't play to FLAC, re-points the track at it, re-tags it and moves the old
+    /// file to the Trash. Returns how many were converted.
+    @discardableResult
+    func convertUnplayable() async -> Int {
+        var done = 0
+        for (id, st) in state.tracks where st.status == .downloaded {
+            guard let path = st.localPath, FileManager.default.fileExists(atPath: path),
+                  Playable.needsConversion(path, quality: quality[path]) else { continue }
+            guard let flac = await Task.detached(priority: .utility, operation: { Playable.convertToFLAC(path) }).value else {
+                log("convert", id, "couldn't convert \((path as NSString).lastPathComponent) to FLAC")
+                continue
+            }
+            var s = st
+            s.localPath = flac
+            state.tracks[id] = s
+            if var a = analysis.removeValue(forKey: path) { a.path = flac; analysis[flac] = a }
+            quality[path] = nil
+            try? FileManager.default.trashItem(at: URL(fileURLWithPath: path), resultingItemURL: nil)
+            log("convert", id, "\(describe(id)): \((path as NSString).pathExtension.uppercased()) → FLAC so Rekordbox can play it")
+            save()
+            await analyseAndTag(id, path: flac)
+            done += 1
+        }
+        if done > 0 { Analyzer.saveCache(analysis) }
+        return done
+    }
+
+    /// Full analysis (BPM, key, energy) of one file, then its tags (incl. "Energy N") and cover.
+    func analyseAndTag(_ id: String, path: String) async {
+        let rec = await readTrack(URL(fileURLWithPath: path))
+        analysis[path] = await Task.detached(priority: .utility) { Analyzer.analyze(rec, libraryTrackID: id) }.value
+        Analyzer.saveCache(analysis)
+        if let job = tagJob(id) { _ = await Task.detached(priority: .utility) { Tagger.write([job]) }.value }
+    }
+
+    /// Crate files with no energy yet (e.g. a format the analyser couldn't read before it was converted).
+    func analyseMissing() async {
+        for (id, st) in state.tracks where st.status == .downloaded {
+            guard let p = st.localPath, FileManager.default.fileExists(atPath: p), analysis[p]?.energy == nil else { continue }
+            await analyseAndTag(id, path: p)
+            log("analyse", id, "analysed \(describe(id)) (energy was missing)")
+        }
+    }
+}

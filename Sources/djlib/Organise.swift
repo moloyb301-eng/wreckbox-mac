@@ -128,6 +128,8 @@ extension LibraryStore {
         } catch {
             log("genres", nil, "genre update failed: \(error.localizedDescription)")
         }
+        busy = "Converting files Rekordbox can't play…"
+        await convertUnplayable()
         busy = "Filing tracks into genre folders…"
         let moved = organiseFolders()
         busy = nil

@@ -335,19 +335,26 @@ final class LibraryStore: ObservableObject {
             return "Saved to _inbox (no matching track): \(file.lastPathComponent)"
         }
         let t = lib.tracks[i]
-        // Best quality wins: a better YouTube copy (Premium after standard) replaces the old YouTube copy, and a
-        // lossless Soulseek edition (slsk-sync's upgrade pass) replaces any lossy copy — MP3, AAC, YouTube, Dolby.
+        // Best quality wins. A better YouTube copy (Premium after standard) replaces the old YouTube copy; otherwise a
+        // second copy of a track (e.g. slsk-sync's lossless upgrade pass) replaces the old one only if it's better —
+        // lossless over lossy, then bitrate — and is dropped if it isn't, so a track never has two files.
         if let old = state.tracks[t.id], old.status == .downloaded, let oldPath = old.localPath, oldPath != file.path,
            FileManager.default.fileExists(atPath: oldPath) {
-            // (Apple Lossless arrives as .m4a, so ask the file itself.)
-            let upgrade = source == "soulseek" && !isTrueLossless(oldPath, source: old.source)
-                && (FileQuality.probe(file.path).map { $0.lossless && !$0.unplayable } ?? Self.losslessExtensions.contains(file.pathExtension.lowercased()))
-            if (source == "youtube" && old.source == "youtube") || upgrade {
+            let newRank = source == "youtube" ? -1 : FileQuality.probe(file.path).map(Self.rank) ?? 0
+            // A YouTube copy is Opus decoded to FLAC: only the quality cache knows it isn't really lossless.
+            let oldRank = quality[oldPath].map(Self.rank)
+                ?? (old.source == "youtube" ? 300 : FileQuality.probe(oldPath).map(Self.rank) ?? 0)
+            if (source == "youtube" && old.source == "youtube") || (source != "youtube" && newRank > oldRank) {
                 try? FileManager.default.trashItem(at: URL(fileURLWithPath: oldPath), resultingItemURL: nil)
                 analysis[oldPath] = nil
                 quality[oldPath] = nil
-                log(source, t.id, upgrade ? "lossless edition replaces the lossy copy of \(describe(t.id))"
-                                          : "replaced the earlier YouTube copy of \(describe(t.id))")
+                log(source, t.id, source == "youtube" ? "replaced the earlier YouTube copy of \(describe(t.id))"
+                                                      : "better copy replaces the old one of \(describe(t.id))")
+            } else if source != "youtube" || old.source != "youtube" {
+                try? FileManager.default.trashItem(at: file, resultingItemURL: nil)
+                log(source, t.id, "kept the existing copy of \(describe(t.id)) (as good or better than \(file.lastPathComponent))")
+                save()
+                return "Kept the existing copy of \(describe(t.id))"
             }
         }
         // Straight into its genre folder (Tracks/<genre>/), see Organise.swift.
@@ -557,18 +564,16 @@ final class LibraryStore: ObservableObject {
         .sorted { $0.1 < $1.1 }.prefix(12).map(\.0)
     }
 
-    static let losslessExtensions: Set<String> = ["flac", "wav", "aif", "aiff", "alac"]
-
     /// The file slsk-sync last delivered for a track (_soulseek/sync.json).
     static func slskDelivered(_ id: String) -> String? {
         let sync = (try? JSONSerialization.jsonObject(with: Data(contentsOf: AppPaths.slskWorkDir.appendingPathComponent("sync.json")))) as? [String: [String: Any]]
         return sync?[id]?["file"] as? String
     }
 
-    /// Real lossless (not a YouTube copy decoded to FLAC, not Dolby surround).
-    func isTrueLossless(_ path: String, source: String?) -> Bool {
-        if let q = quality[path] { return q.lossless && !q.fromYouTube && !q.unplayable }
-        return source != "youtube" && Self.losslessExtensions.contains((path as NSString).pathExtension.lowercased())
+    /// How good a copy is: real lossless first (not a YouTube copy decoded to FLAC), then bitrate; Dolby surround last.
+    static func rank(_ q: FileQuality) -> Int {
+        if q.unplayable { return -2 }
+        return q.lossless && !q.fromYouTube ? 100_000 + (q.bits ?? 16) : q.kbps ?? 0
     }
 
     func importInbox() async {
@@ -578,7 +583,13 @@ final class LibraryStore: ObservableObject {
         guard let lib = library else { return }
         // slsk-sync names each file "<track.fileName>.ext" (or "… (2).ext"), so the target track is known exactly.
         let byFileName = Dictionary(lib.tracks.map { ($0.fileName, $0.id) }, uniquingKeysWith: { a, _ in a })
-        for f in files where audioExtensions.contains(f.pathExtension.lowercased()) {
+        for var f in files where audioExtensions.contains(f.pathExtension.lowercased()) {
+            // Formats Rekordbox can't play (OGG, Opus, WMA, Dolby surround) become FLAC before they're filed.
+            if Playable.needsConversion(f.path, quality: nil),
+               let flac = await Task.detached(priority: .utility, operation: { [f] in Playable.convertToFLAC(f.path) }).value {
+                try? FileManager.default.removeItem(at: f)
+                f = URL(fileURLWithPath: flac)
+            }
             let size = (try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             guard inboxSeen.insert("\(f.path)|\(size)").inserted else { continue }
             let stem = f.deletingPathExtension().lastPathComponent
