@@ -26,8 +26,11 @@ final class MiniPlayerWindow {
     func open(store: LibraryStore) {
         UserDefaults.standard.set(true, forKey: "miniOpen")
         if let w = window { w.orderFrontRegardless(); return }
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: Self.body),
-                         styleMask: [.borderless], backing: .buffered, defer: false)
+        // A non-activating panel: its buttons work on the first click without bringing WreckBox's main window forward.
+        let w = NSPanel(contentRect: NSRect(x: 0, y: 0, width: Self.width, height: Self.body),
+                        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        w.hidesOnDeactivate = false
+        w.becomesKeyOnlyIfNeeded = true
         w.isOpaque = false
         w.backgroundColor = .clear
         w.hasShadow = true

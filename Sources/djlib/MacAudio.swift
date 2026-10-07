@@ -128,11 +128,15 @@ final class MacAudio {
     // MARK: spectrum for the visualiser
 
     private var tapping = false
+    private var spectrumUsers = 0
+    /// Each visualiser on screen asks for the spectrum (on) and lets go (off); the tap runs while anyone needs it.
     func spectrum(_ on: Bool) {
-        guard on != tapping else { return }
-        tapping = on
+        spectrumUsers = max(0, spectrumUsers + (on ? 1 : -1))
+        let want = spectrumUsers > 0
+        guard want != tapping else { return }
+        tapping = want
         let mixer = engine.mainMixerNode
-        if on {
+        if want {
             let analyser = Spectrum.shared
             mixer.installTap(onBus: 0, bufferSize: 2048, format: mixer.outputFormat(forBus: 0)) { buffer, _ in
                 analyser.feed(buffer)

@@ -230,10 +230,33 @@ class NoLogin(Exception):
     pass
 
 
-def refresh_cookies(cfg: dict) -> None:
-    """Reads the browser's YouTube login once (macOS asks for the browser's keychain item — "Always Allow"
-    keeps it quiet) and saves just the YouTube / Google cookies for this pass's downloads."""
+LOGIN_COOKIES = ("SAPISID", "__Secure-3PSID", "LOGIN_INFO")
+
+
+def saved_login_ok(cfg: dict) -> bool:
+    """The saved login (cookies.txt) is fresh enough to use as is. yt-dlp writes refreshed cookies back to it after
+    every download, so the session stays alive; reading Chrome again (which makes macOS ask for the keychain
+    password) is only needed when it's missing, signed out, or older than `cookie_max_age_days`."""
+    import http.cookiejar
+    if not COOKIE_FILE.exists():
+        return False
+    if time.time() - COOKIE_FILE.stat().st_mtime > cfg.get("cookie_max_age_days", 14) * 86400:
+        return False
+    try:
+        jar = http.cookiejar.MozillaCookieJar(str(COOKIE_FILE))
+        jar.load(ignore_discard=True, ignore_expires=True)
+    except Exception:
+        return False
+    return any(c.name in LOGIN_COOKIES for c in jar)
+
+
+def refresh_cookies(cfg: dict, force: bool = False) -> None:
+    """Makes sure cookies.txt holds your YouTube login: reuses the saved one (no password prompt) unless it's stale;
+    otherwise reads it from the browser once (macOS asks for the browser's keychain item — "Always Allow" keeps
+    even that quiet)."""
     if not cfg.get("browser"):
+        return
+    if not force and saved_login_ok(cfg):
         return
     from yt_dlp.cookies import extract_cookies_from_browser
     import http.cookiejar
@@ -242,7 +265,7 @@ def refresh_cookies(cfg: dict) -> None:
     for c in jar:
         if c.domain.endswith(("youtube.com", "google.com")):
             out.set_cookie(c)
-    if not any(c.name in ("SAPISID", "__Secure-3PSID", "LOGIN_INFO") for c in out):
+    if not any(c.name in LOGIN_COOKIES for c in out):
         # Empty when macOS refused the keychain prompt, or you're signed out of YouTube in that browser.
         raise NoLogin(f"no YouTube login found in {cfg['browser']}")
     COOKIE_FILE.touch(mode=0o600, exist_ok=True)

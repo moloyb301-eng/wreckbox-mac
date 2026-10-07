@@ -25,7 +25,14 @@ final class YouTubeFinder: ObservableObject {
     /// Track id → "downloading" / "done" / an error, for the list on the left.
     @Published var jobs: [String: String] = [:]
 
+    /// yt-fill logs to stdout too: its answer is the last line.
     private func run(_ args: [String]) async -> Data {
+        let all = await runRaw(args)
+        let lines = all.split(separator: UInt8(ascii: "\n")).filter { !$0.isEmpty }
+        return lines.last.map { Data($0) } ?? Data()
+    }
+
+    private func runRaw(_ args: [String]) async -> Data {
         await Task.detached(priority: .userInitiated) {
             let p = Process()
             p.executableURL = AppPaths.ytFill
