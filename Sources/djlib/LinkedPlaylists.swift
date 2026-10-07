@@ -61,9 +61,7 @@ enum LinkedPlaylists {
             let p = Process()
             p.executableURL = AppPaths.ytFill
             p.arguments = args
-            var env = ProcessInfo.processInfo.environment
-            env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
-            p.environment = env
+            p.environment = AppPaths.toolEnvironment
             let out = Pipe()
             p.standardOutput = out
             p.standardError = FileHandle.nullDevice

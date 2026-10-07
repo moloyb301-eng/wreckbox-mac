@@ -57,10 +57,8 @@ extension LibraryStore {
         let p = Process()
         p.executableURL = AppPaths.ytFill
         p.arguments = ["run"]
-        // ffmpeg / deno (yt-dlp's YouTube challenge solver) live in Homebrew, which apps don't have on their PATH.
-        var env = ProcessInfo.processInfo.environment
-        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
-        p.environment = env
+        // ffmpeg / deno (yt-dlp's YouTube challenge solver): the app's own, or Homebrew's (AppPaths.toolPATH).
+        p.environment = AppPaths.toolEnvironment
         p.standardOutput = FileHandle.nullDevice   // it writes its own log
         p.standardError = FileHandle.nullDevice
         p.terminationHandler = { _ in Task { @MainActor [weak self] in self?.refreshYouTube() } }

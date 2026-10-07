@@ -167,11 +167,17 @@ final class LibraryStore: ObservableObject {
     func reload() {
         let dec = JSONDecoder()
         dec.dateDecodingStrategy = .iso8601
+        // First launch on a new Mac: an empty library to start from (playlists come from Spotify or links).
+        let libFile = libraryRoot.appendingPathComponent("library.json")
+        if !FileManager.default.fileExists(atPath: libFile.path) {
+            try? FileManager.default.createDirectory(at: libraryRoot, withIntermediateDirectories: true)
+            try? buildLibrary()
+        }
         do {
             library = try dec.decode(Library.self, from: Data(contentsOf: libraryRoot.appendingPathComponent("library.json")))
             loadError = nil
         } catch {
-            loadError = "Couldn't read library.json – run `djlib spotify` then `djlib library`. (\(error.localizedDescription))"
+            loadError = "Couldn't read library.json in Music/DJ Library. (\(error.localizedDescription))"
         }
         if let d = try? Data(contentsOf: Self.stateFile) {
             do {
@@ -497,6 +503,7 @@ final class LibraryStore: ObservableObject {
         let p = Process()
         p.executableURL = AppPaths.slskSync
         p.arguments = ["run"]
+        p.environment = AppPaths.toolEnvironment
         p.standardOutput = FileHandle.nullDevice   // it writes its own log
         p.standardError = FileHandle.nullDevice
         p.terminationHandler = { _ in Task { @MainActor [weak self] in self?.refreshSoulseek() } }

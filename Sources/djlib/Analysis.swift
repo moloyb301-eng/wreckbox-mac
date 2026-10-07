@@ -84,6 +84,7 @@ enum Analyzer {
         let p = Process()
         p.executableURL = AppPaths.essentiaPython
         p.arguments = [AppPaths.essentiaScript.path, rec.path]
+        p.environment = AppPaths.toolEnvironment
         let out = Pipe()
         p.standardOutput = out
         p.standardError = FileHandle.nullDevice

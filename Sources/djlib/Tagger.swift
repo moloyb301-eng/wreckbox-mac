@@ -34,6 +34,7 @@ enum Tagger {
         let p = Process()
         p.executableURL = AppPaths.essentiaPython
         p.arguments = [script.path]
+        p.environment = AppPaths.toolEnvironment
         let stdin = Pipe(), stdout = Pipe()
         p.standardInput = stdin
         p.standardOutput = stdout

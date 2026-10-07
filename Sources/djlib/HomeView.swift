@@ -225,12 +225,7 @@ struct SoulseekView: View {
             if !s.configured {
                 VStack(alignment: .leading, spacing: 10) {
                     DotLabel("Setup", color: Theme.text)
-                    Text("Open the settings file, fill in your Soulseek username and password, save, and come back here.")
-                        .font(Theme.ui(13)).foregroundStyle(Theme.text2)
-                    PillButton(label: "Open config.toml", icon: "doc.text", style: .primary) {
-                        NSWorkspace.shared.open([AppPaths.slskConfig], withApplicationAt: URL(fileURLWithPath: "/System/Applications/TextEdit.app"),
-                                                configuration: NSWorkspace.OpenConfiguration())
-                    }
+                    SoulseekLogin()
                 }
                 .padding(18)
                 .glass(Theme.Radius.tile)
@@ -238,5 +233,41 @@ struct SoulseekView: View {
             LogPanel(lines: s.recent)
         }
         .padding(.horizontal, 22).padding(.top, 34).padding(.bottom, 10)
+    }
+}
+
+/// Soulseek username + password (the same login SoulseekQt / Nicotine+ use; a new name is registered the first time
+/// it signs in). Saved only on this Mac, in the helper's settings file.
+struct SoulseekLogin: View {
+    @EnvironmentObject var store: LibraryStore
+    @State private var user = ""
+    @State private var pass = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Sign in to Soulseek — or pick a new username and password and one is made for you. It's saved only on this Mac.")
+                .font(Theme.ui(13)).foregroundStyle(Theme.text2).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                TextField("Username", text: $user).textFieldStyle(.roundedBorder).frame(width: 200)
+                SecureField("Password", text: $pass).textFieldStyle(.roundedBorder).frame(width: 200)
+                PillButton(label: "Save", icon: "checkmark", style: .primary) { save() }.disabled(user.isEmpty || pass.isEmpty)
+            }
+        }
+    }
+
+    private func save() {
+        let q = { (s: String) in "\"" + s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\"" }
+        let url = AppPaths.slskConfig
+        var text = (try? String(contentsOf: url, encoding: .utf8)) ?? "[soulseek]\nusername = \"\"\npassword = \"\"\nlisten_port = 60000\nshare_dirs = []\n"
+        for (key, value) in [("username", user), ("password", pass)] {
+            let line = "\(key) = \(q(value))"
+            if let r = text.range(of: "(?m)^\(key)\\s*=.*$", options: .regularExpression) { text.replaceSubrange(r, with: line) }
+            else { text = text.replacingOccurrences(of: "[soulseek]\n", with: "[soulseek]\n\(line)\n") }
+        }
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? text.write(to: url, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        pass = ""
+        store.refreshSoulseek()
     }
 }

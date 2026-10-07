@@ -5,7 +5,7 @@ import Foundation
 // real FLAC of them instead. _cache/converted.json lists files converted before that decision (empty once reverted).
 
 enum Playable {
-    static let ffmpeg = ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"].first { FileManager.default.isExecutableFile(atPath: $0) }
+    static let ffmpeg = [AppPaths.binDir?.appendingPathComponent("ffmpeg").path, "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"].compactMap { $0 }.first { FileManager.default.isExecutableFile(atPath: $0) }
     static let unplayableExtensions: Set<String> = ["ogg", "oga", "opus", "webm", "wma"]
 
     /// Needs converting before Rekordbox can use it.

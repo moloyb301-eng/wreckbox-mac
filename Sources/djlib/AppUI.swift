@@ -71,6 +71,9 @@ struct DJApp: App {
                 .preferredColorScheme(.dark)
         }
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Setup…") { NotificationCenter.default.post(name: .showSetup, object: nil) }
+            }
             CommandMenu("Player") {
                 Button("Play / Pause") { Playback.shared.control(.toggle) }
                 Button("Next") { Playback.shared.control(.next) }.keyboardShortcut(.rightArrow, modifiers: [.command])
@@ -89,6 +92,8 @@ struct DJApp: App {
 
 struct ContentView: View {
     @EnvironmentObject var store: LibraryStore
+    /// First launch of a shipped app, or WreckBox → Setup… (Setup.swift).
+    @State private var showSetup = AppPaths.bundled && !Setup.done
 
     var body: some View {
         let focused = store.focus.flatMap { store.row($0) }
@@ -133,6 +138,8 @@ struct ContentView: View {
         .background(AmbientBackground(row: focused))
         .overlay(alignment: .bottomLeading) { UpdateBanner().padding(.leading, 252) }
         .overlay { FullPlayerOverlay() }
+        .sheet(isPresented: $showSetup) { SetupView().environmentObject(store) }
+        .onReceive(NotificationCenter.default.publisher(for: .showSetup)) { _ in showSetup = true }
         .animation(.spring(response: 0.35, dampingFraction: 0.9), value: store.focus)
         }
         .foregroundStyle(Theme.text)
@@ -1061,4 +1068,8 @@ struct LogView: View {
         if event == "soulseek" { return Theme.lightBlue }
         return Theme.text2
     }
+}
+
+extension Notification.Name {
+    static let showSetup = Notification.Name("WreckBoxShowSetup")
 }

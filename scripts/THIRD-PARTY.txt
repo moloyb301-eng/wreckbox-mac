@@ -1,0 +1,8 @@
+WreckBox for Mac includes these programs, each under its own licence:
+
+- Python 3.11 (python-build-standalone, https://github.com/astral-sh/python-build-standalone) — PSF License
+- FFmpeg / FFprobe 9.0.2 (static builds by https://ffmpeg.martin-riedl.de) — GPL v3; source: https://ffmpeg.org/download.html
+- Deno 2 (https://deno.com) — MIT
+- Essentia (https://essentia.upf.edu) — AGPL v3
+- aioslsk, yt-dlp, ytmusicapi, mutagen, numpy, pydantic, aiohttp and their dependencies — see each package's
+  licence in Resources/runtime/python/lib/python3.11/site-packages/*.dist-info

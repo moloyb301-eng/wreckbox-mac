@@ -37,9 +37,7 @@ final class YouTubeFinder: ObservableObject {
             let p = Process()
             p.executableURL = AppPaths.ytFill
             p.arguments = args
-            var env = ProcessInfo.processInfo.environment
-            env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")   // ffmpeg, deno
-            p.environment = env
+            p.environment = AppPaths.toolEnvironment   // ffmpeg, deno
             let out = Pipe()
             p.standardOutput = out
             p.standardError = FileHandle.nullDevice

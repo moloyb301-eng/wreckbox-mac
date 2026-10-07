@@ -48,6 +48,7 @@ enum Snapshot {
                 ("player-halo", AnyView(HaloVisualizer(levels: levels, row: row).frame(width: 600, height: 600))),
                 ("player-eq", AnyView(EQPanel().padding(16).frame(width: 440))),
                 ("add-playlist", AnyView(AddPlaylistSheet())),
+                ("setup", AnyView(SetupView().environment(\.snapshotMode, true))),
                 ("mini-player", AnyView(MiniPlayerView(previewDrawers: true).frame(width: MiniPlayerWindow.width, height: MiniPlayerWindow.body + MiniPlayerWindow.controlsHeight + MiniPlayerWindow.eqHeight - 2 * MiniPlayerWindow.tuck + 8).background(Color(red: 0.25, green: 0.3, blue: 0.4)))),
                 ("player-bar", AnyView(VStack {
                     Spacer()
