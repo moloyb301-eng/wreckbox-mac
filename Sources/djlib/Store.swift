@@ -590,19 +590,8 @@ final class LibraryStore: ObservableObject {
         guard let lib = library else { return }
         // slsk-sync names each file "<track.fileName>.ext" (or "… (2).ext"), so the target track is known exactly.
         let byFileName = Dictionary(lib.tracks.map { ($0.fileName, $0.id) }, uniquingKeysWith: { a, _ in a })
-        for var f in files where audioExtensions.contains(f.pathExtension.lowercased()) {
-            // Formats Rekordbox can't play (OGG, Opus, WMA, Dolby surround) become FLAC before they're filed.
-            if Playable.needsConversion(f.path, quality: nil) {
-                let stem = f.deletingPathExtension().lastPathComponent
-                if let id = byFileName[stem] ?? byFileName[stem.replacingOccurrences(of: #" \(\d+\)$"#, with: "", options: .regularExpression)] {
-                    Playable.recordSource(f.path, id: id)
-                }
-            }
-            if Playable.needsConversion(f.path, quality: nil),
-               let flac = await Task.detached(priority: .utility, operation: { [f] in Playable.convertToFLAC(f.path) }).value {
-                try? FileManager.default.removeItem(at: f)
-                f = URL(fileURLWithPath: flac)
-            }
+        for f in files where audioExtensions.contains(f.pathExtension.lowercased()) {
+            // Files are kept in the format they came in (the user's rule: never convert to FLAC).
             let size = (try? f.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             guard inboxSeen.insert("\(f.path)|\(size)").inserted else { continue }
             let stem = f.deletingPathExtension().lastPathComponent

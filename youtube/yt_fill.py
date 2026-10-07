@@ -6,8 +6,8 @@ upload (artist's "song" entry, matching title, artist and length), downloads it 
 login (taken from your browser) and hands it to the app through _inbox/, like slsk-sync does. The app then
 files, analyses and tags it.
 
-Only official audio ("song" entries), never music videos. Quality: Premium gets Opus ~300 kbps (format 774) — decoded to FLAC so Rekordbox can read it without a second
-lossy encode; otherwise AAC 256 kbps (141) or the standard Opus ~160 / AAC 128 streams.
+Only official audio ("song" entries), never music videos. Quality: Premium gets Opus ~300 kbps (format 774), kept as
+.opus (never converted); otherwise AAC 256 kbps (141, .m4a) or the standard Opus ~160 / AAC 128 streams.
 
     yt-fill run                  # keep filling: process due tracks, sleep, repeat (wakes on requests)
     yt-fill once [--limit N]     # one pass, then exit
@@ -232,7 +232,7 @@ def refresh_cookies(cfg: dict) -> None:
     out.save(ignore_discard=True, ignore_expires=True)
 
 def download(video_id: str, dest_stem: str, cfg: dict) -> dict:
-    """Downloads the best audio into _inbox/<dest_stem>.flac|.m4a. Returns {format, kbps, codec, path}."""
+    """Downloads the best audio into _inbox/<dest_stem>.opus|.m4a, as YouTube sends it. Returns {format, kbps, codec, path}."""
     tmp = Path(tempfile.mkdtemp(prefix="yt-", dir=WORK_DIR))
     try:
         opts = {
@@ -256,9 +256,9 @@ def download(video_id: str, dest_stem: str, cfg: dict) -> dict:
             # Re-wrap only (no re-encode) so the file is a clean .m4a.
             subprocess.run([FFMPEG, "-v", "error", "-y", "-i", str(got), "-vn", "-c:a", "copy", "-movflags", "+faststart", str(out)], check=True)
         else:
-            # Opus: Rekordbox can't read it; decoding to FLAC keeps every bit of it without a second lossy encode.
-            out = tmp / f"{dest_stem}.flac"
-            subprocess.run([FFMPEG, "-v", "error", "-y", "-i", str(got), "-vn", "-c:a", "flac", "-sample_fmt", "s16", str(out)], check=True)
+            # Opus stays Opus (the user's rule: never convert to FLAC): re-wrapped from WebM into .opus, not re-encoded.
+            out = tmp / f"{dest_stem}.opus"
+            subprocess.run([FFMPEG, "-v", "error", "-y", "-i", str(got), "-vn", "-c:a", "copy", str(out)], check=True)
         final = INBOX / out.name
         shutil.move(str(out), final)   # the app only ever sees complete files
         return {"format": info.get("format_id"), "kbps": kbps, "codec": codec, "path": str(final)}
@@ -319,6 +319,47 @@ def run_pass(cfg: dict, limit: int | None) -> int:
             time.sleep(cfg["gap_seconds"])
         ok += fill(t, yt, cfg, records)
     log.info("Pass finished: %d of %d downloaded", ok, len(todo))
+    return ok
+
+
+def in_inbox(stem: str) -> bool:
+    return any(p.stem == stem for p in INBOX.glob("*") if p.is_file())
+
+
+def decoded_copies(records: dict) -> list[dict]:
+    """YouTube copies made before 2026-10-07, when Opus was decoded to FLAC: the user wants files as they came, so
+    these are fetched again (same video) as .opus. The app swaps each one in for the FLAC."""
+    library = load_json(LIBRARY_ROOT / "library.json", {"tracks": []})
+    state = load_json(LIBRARY_ROOT / "state.json", {}).get("tracks", {})
+    out = []
+    for t in library["tracks"]:
+        st, rec = state.get(t["id"], {}), records.get(t["id"], {})
+        if (st.get("status") == "downloaded" and st.get("source") == "youtube" and (st.get("localPath") or "").endswith(".flac")
+                and rec.get("videoId") and rec.get("codec") != "mp4a" and not in_inbox(t["fileName"])):
+            out.append(t)
+    return out
+
+
+def native_pass(cfg: dict, limit: int = 30) -> int:
+    records = load_json(RECORDS_FILE, {})
+    todo = decoded_copies(records)[:limit]
+    if not todo:
+        return 0
+    log.info("Original format: fetching %d YouTube tracks again as Opus (they were decoded to FLAC)", len(todo))
+    ok = 0
+    for i, t in enumerate(todo):
+        if i:
+            time.sleep(cfg["gap_seconds"])
+        name = f"{', '.join(t['artists'])} - {t['title']}"
+        try:
+            got = download(records[t["id"]]["videoId"], t["fileName"], cfg)
+        except Exception as e:
+            log.info("✗ couldn't fetch %s again: %s", name, str(e).splitlines()[0][:200])
+            continue
+        records[t["id"]].update(format=got["format"], kbps=got["kbps"], codec=got["codec"], native=now_iso())
+        save_json(RECORDS_FILE, records)
+        log.info("✓ %s  [%s %s kbps, original format]", name, got["codec"], got["kbps"])
+        ok += 1
     return ok
 
 
@@ -405,6 +446,8 @@ def main() -> None:
         raise SystemExit("ffmpeg is missing (brew install ffmpeg)")
     while True:
         got = run_pass(cfg, getattr(a, "limit", None))
+        if a.cmd == "run":
+            got += native_pass(cfg)   # after new tracks: put back the original format of decoded copies
         if a.cmd == "once":
             break
         waiting = got == 0 and "⏸" in (LOG_FILE.read_text(errors="ignore").splitlines() or [""])[-1]

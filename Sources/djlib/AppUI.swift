@@ -48,7 +48,6 @@ struct DJApp: App {
                     PlaylistSync.installAgent()
                     if store.youtubeFillEnabled { store.startYouTubeFill() }
                     Task {
-                        await store.convertUnplayable()   // OGG / Opus / Dolby files → FLAC Rekordbox can play
                         await store.analyseMissing()      // and anything still without BPM / key / energy
                     }
                     if PlaylistSync.due { Task { await store.syncPlaylists() } }   // missed this morning's run

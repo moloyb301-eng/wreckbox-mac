@@ -109,7 +109,11 @@ extension LibraryStore {
         let found = await Task.detached(priority: .utility) { () -> [String: FileQuality] in
             var out: [String: FileQuality] = [:]
             for (p, id) in todo {
-                guard var q = FileQuality.probe(p) else { continue }
+                // macOS can't read Ogg Opus (YouTube's own format): describe it from what YouTube fill recorded.
+                let size = ((try? FileManager.default.attributesOfItem(atPath: p)[.size]) as? NSNumber)?.int64Value ?? 0
+                guard var q = FileQuality.probe(p)
+                        ?? (sources[id] == "youtube" ? FileQuality(codec: "OPUS", sampleRate: 48000, lossless: false, size: size) : nil)
+                else { continue }
                 if let c = converted[id] {
                     q.convertedFrom = c["codec"] as? String
                     q.kbps = c["kbps"] as? Int
