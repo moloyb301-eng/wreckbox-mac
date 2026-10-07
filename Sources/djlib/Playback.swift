@@ -61,27 +61,28 @@ final class Playback: ObservableObject {
     /// The device that started playing most recently: the bar shows and controls it.
     @Published private(set) var activeID: String?
     @Published private(set) var error: String?
+    /// The full-screen player (art or visualiser) is showing; the window goes full screen with it.
+    @Published private(set) var fullScreen = false
+
+    func setFullScreen(_ on: Bool) {
+        fullScreen = on
+        if let w = NSApp.windows.first(where: { $0.isVisible && $0.styleMask.contains(.titled) && !($0 is NSPanel) }),
+           w.styleMask.contains(.fullScreen) != on {
+            w.toggleFullScreen(nil)
+        }
+    }
 
     weak var store: LibraryStore?
     weak var server: PhoneSyncServer?
 
     let selfID = AccountAPI.deviceID
-    private let player = AVPlayer()
+    let audio = MacAudio()
     private var queue: [String] = []
     private var index = -1
-    private var timeObserver: Any?
-    private var endObserver: AnyCancellable?
     private var tick: AnyCancellable?
-    private var ready: AnyCancellable?
 
     private init() {
-        player.automaticallyWaitsToMinimizeStalling = false
-        endObserver = NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] n in
-                guard let self, (n.object as? AVPlayerItem) === self.player.currentItem else { return }
-                self.next()
-            }
+        audio.onEnd = { [weak self] in self?.next() }
         // The bar's clock (and controllers' estimates of a phone's position) move on their own.
         tick = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect().sink { [weak self] _ in
             guard let self, self.devices.values.contains(where: \.playing) else { return }
@@ -103,11 +104,10 @@ final class Playback: ObservableObject {
     }
 
     private var localState: DeviceState {
-        let t = player.currentTime().seconds, d = player.currentItem?.duration.seconds ?? 0
-        return DeviceState(id: selfID, name: Host.current().localizedName ?? "This Mac", kind: "mac",
-                           trackID: index >= 0 && index < queue.count ? queue[index] : nil,
-                           playing: player.rate > 0, position: t.isFinite ? t : 0, duration: d.isFinite ? d : 0,
-                           updatedAt: Date().timeIntervalSince1970 * 1000, queue: queue, index: index, volume: Double(player.volume))
+        DeviceState(id: selfID, name: Host.current().localizedName ?? "This Mac", kind: "mac",
+                    trackID: index >= 0 && index < queue.count ? queue[index] : nil,
+                    playing: audio.isPlaying, position: audio.position, duration: audio.duration,
+                    updatedAt: Date().timeIntervalSince1970 * 1000, queue: queue, index: index, volume: audio.volume)
     }
 
     // MARK: controls (for whichever device is active)
@@ -156,7 +156,7 @@ final class Playback: ObservableObject {
         } else {
             send(device, "load", ["queue": q, "index": i, "position": pos, "playing": playing])
         }
-        if from.id == selfID { player.pause() } else { send(from.id, "pause", [:]) }
+        if from.id == selfID { audio.pause() } else { send(from.id, "pause", [:]) }
         activeID = device
         reportLocal()
     }
@@ -173,13 +173,14 @@ final class Playback: ObservableObject {
         guard i >= 0, i < queue.count, let path = localPath(queue[i]) else { error = "Not on this Mac"; return }
         error = nil
         index = i
-        let item = AVPlayerItem(url: URL(fileURLWithPath: path))
-        // The length is only known once the file is open: report again then, so other devices show it.
-        ready = item.publisher(for: \.status).filter { $0 == .readyToPlay }.first().receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.updateNowPlaying(); self?.reportLocal() }
-        player.replaceCurrentItem(with: item)
-        if position > 0 { player.seek(to: CMTime(seconds: position, preferredTimescale: 600)) }
-        if playing { player.play(); activeID = selfID }
+        do {
+            try audio.load(path)
+        } catch {
+            self.error = "Can't play \((path as NSString).lastPathComponent): \(error.localizedDescription)"
+            return reportLocal()
+        }
+        if position > 0 { audio.seek(position) }
+        if playing { audio.play(); activeID = selfID }
         updateNowPlaying()
         reportLocal()
     }
@@ -187,22 +188,22 @@ final class Playback: ObservableObject {
     private func local(_ action: Action, value: Double?) {
         switch action {
         case .play:
-            if player.currentItem == nil, !queue.isEmpty { return load(at: max(index, 0), from: 0, playing: true) }
-            pauseOthers(); player.play(); activeID = selfID
-        case .pause: player.pause()
-        case .toggle: return local(player.rate > 0 ? .pause : .play, value: nil)
+            if !audio.hasFile, !queue.isEmpty { return load(at: max(index, 0), from: 0, playing: true) }
+            pauseOthers(); audio.play(); activeID = selfID
+        case .pause: audio.pause()
+        case .toggle: return local(audio.isPlaying ? .pause : .play, value: nil)
         case .next: return next()
         case .previous:
-            if player.currentTime().seconds > 3 || index <= 0 { player.seek(to: .zero) } else { return load(at: index - 1, from: 0, playing: player.rate > 0) }
-        case .seek: player.seek(to: CMTime(seconds: value ?? 0, preferredTimescale: 600))
-        case .volume: player.volume = Float(value ?? 1)
+            if audio.position > 3 || index <= 0 { audio.seek(0) } else { return load(at: index - 1, from: 0, playing: audio.isPlaying) }
+        case .seek: audio.seek(value ?? 0)
+        case .volume: audio.volume = value ?? 1
         }
         updateNowPlaying()
         reportLocal()
     }
 
     private func next() {
-        if index + 1 < queue.count { load(at: index + 1, from: 0, playing: true) } else { player.pause(); reportLocal() }
+        if index + 1 < queue.count { load(at: index + 1, from: 0, playing: true) } else { audio.pause(); reportLocal() }
     }
 
     /// Starting here pauses whatever plays elsewhere (one device plays at a time, like Spotify).
@@ -240,7 +241,7 @@ final class Playback: ObservableObject {
         devices[s.id] = s
         if started {
             activeID = s.id
-            if s.id != selfID, player.rate > 0 { player.pause(); devices[selfID] = localState }
+            if s.id != selfID, audio.isPlaying { audio.pause(); devices[selfID] = localState }
         } else if activeID == nil {
             activeID = s.id
         }
@@ -284,13 +285,12 @@ final class Playback: ObservableObject {
             return
         }
         var info: [String: Any] = [MPMediaItemPropertyTitle: t.title, MPMediaItemPropertyArtist: t.artists.joined(separator: ", "),
-                                   MPNowPlayingInfoPropertyElapsedPlaybackTime: player.currentTime().seconds,
-                                   MPNowPlayingInfoPropertyPlaybackRate: player.rate]
+                                   MPNowPlayingInfoPropertyElapsedPlaybackTime: audio.position,
+                                   MPNowPlayingInfoPropertyPlaybackRate: audio.isPlaying ? 1.0 : 0.0]
         if let a = t.album { info[MPMediaItemPropertyAlbumTitle] = a }
-        let d = player.currentItem?.asset.duration.seconds ?? 0
-        if d.isFinite, d > 0 { info[MPMediaItemPropertyPlaybackDuration] = d }
+        if audio.duration > 0 { info[MPMediaItemPropertyPlaybackDuration] = audio.duration }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-        MPNowPlayingInfoCenter.default().playbackState = player.rate > 0 ? .playing : .paused
+        MPNowPlayingInfoCenter.default().playbackState = audio.isPlaying ? .playing : .paused
     }
 }
 
@@ -300,6 +300,7 @@ final class Playback: ObservableObject {
 struct NowPlayingBar: View {
     @EnvironmentObject var store: LibraryStore
     @ObservedObject var playback = Playback.shared
+    @State private var showEQ = false
 
     static let height: CGFloat = 64
 
@@ -328,6 +329,13 @@ struct NowPlayingBar: View {
                     playback.control(.seek, value: f * d.duration)
                 }
                 Text(Self.time(d.duration)).font(Theme.dot(11)).foregroundStyle(Theme.text3).frame(width: 40, alignment: .leading)
+                HStack(spacing: 2) {
+                    barButton("slider.vertical.3", "Equaliser") { showEQ.toggle() }
+                        .popover(isPresented: $showEQ, arrowEdge: .top) { EQPanel().padding(16).frame(width: 440) }
+                    barButton("arrow.up.left.and.arrow.down.right", "Full screen — album art or visualiser") { playback.setFullScreen(true) }
+                    barButton("pip", "Mini player on the desktop") { MiniPlayerWindow.shared.toggle(store: store) }
+                }
+                .frame(width: 108)
                 DevicePicker(playback: playback).frame(width: 170, alignment: .trailing)
             }
             .padding(.horizontal, 16)

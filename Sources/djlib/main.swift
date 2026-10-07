@@ -30,6 +30,7 @@ do {
     case "genres": try await GenreTool.run(args: Array(args.dropFirst()))
     case "inventory": try await runInventory(paths: Array(args.dropFirst()))
     case "snapshot": await Snapshot.run(args: Array(args.dropFirst()))
+    case "play-test": await MacAudio.selfTest(Array(args.dropFirst()))
     case "layout-check": await LayoutCheck.run(args: Array(args.dropFirst()))
     case "make-icon": await IconMaker.run(args: Array(args.dropFirst()))
     case "phone-serve":   // developer test: serve the crate to phones for N seconds (no window)

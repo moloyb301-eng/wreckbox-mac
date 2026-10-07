@@ -59,9 +59,20 @@ struct DJApp: App {
                     }
                     Playback.shared.store = store       // player + device hub (Playback.swift)
                     Playback.shared.server = phoneSync
+                    if UserDefaults.standard.bool(forKey: "miniOpen") { MiniPlayerWindow.shared.open(store: store) }
                 }
                 .frame(minWidth: 980, minHeight: 620)
                 .preferredColorScheme(.dark)
+        }
+        .commands {
+            CommandMenu("Player") {
+                Button("Play / Pause") { Playback.shared.control(.toggle) }
+                Button("Next") { Playback.shared.control(.next) }.keyboardShortcut(.rightArrow, modifiers: [.command])
+                Button("Previous") { Playback.shared.control(.previous) }.keyboardShortcut(.leftArrow, modifiers: [.command])
+                Divider()
+                Button("Full Screen Player") { Playback.shared.setFullScreen(!Playback.shared.fullScreen) }.keyboardShortcut("f", modifiers: [.command, .control])
+                Button("Mini Player") { MiniPlayerWindow.shared.toggle(store: store) }.keyboardShortcut("m", modifiers: [.command, .option])
+            }
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentMinSize)
@@ -113,6 +124,7 @@ struct ContentView: View {
         .frame(width: g.size.width, height: g.size.height)
         .background(AmbientBackground(row: focused))
         .overlay(alignment: .bottomLeading) { UpdateBanner().padding(.leading, 252) }
+        .overlay { FullPlayerOverlay() }
         .animation(.spring(response: 0.35, dampingFraction: 0.9), value: store.focus)
         }
         .foregroundStyle(Theme.text)
@@ -124,6 +136,14 @@ struct ContentView: View {
         case .soundcloud, .soulseek, .log, .phone: return false
         default: return true
         }
+    }
+}
+
+/// The full-screen player over the whole window while it's on.
+struct FullPlayerOverlay: View {
+    @ObservedObject var playback = Playback.shared
+    var body: some View {
+        if playback.fullScreen { FullPlayerView().transition(.opacity) }
     }
 }
 
