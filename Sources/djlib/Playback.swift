@@ -22,11 +22,12 @@ struct DeviceState: Codable, Equatable {
     var queue: [String]?
     var index: Int?
     var volume: Double?
+    var shuffle: Bool?
 
     init(id: String, name: String, kind: String, trackID: String?, playing: Bool, position: Double, duration: Double,
-         updatedAt: Double, queue: [String]?, index: Int?, volume: Double?) {
+         updatedAt: Double, queue: [String]?, index: Int?, volume: Double?, shuffle: Bool? = nil) {
         (self.id, self.name, self.kind, self.trackID, self.playing, self.position, self.duration) = (id, name, kind, trackID, playing, position, duration)
-        (self.updatedAt, self.queue, self.index, self.volume) = (updatedAt, queue, index, volume)
+        (self.updatedAt, self.queue, self.index, self.volume, self.shuffle) = (updatedAt, queue, index, volume, shuffle)
     }
 
     /// Phones leave out what they don't know (the hub stamps `updatedAt` itself), so only the id is required.
@@ -43,6 +44,7 @@ struct DeviceState: Codable, Equatable {
         queue = try c.decodeIfPresent([String].self, forKey: .queue)
         index = try c.decodeIfPresent(Int.self, forKey: .index)
         volume = try c.decodeIfPresent(Double.self, forKey: .volume)
+        shuffle = try c.decodeIfPresent(Bool.self, forKey: .shuffle)
     }
 
     /// Where it is now, counting the time since it reported.
@@ -78,6 +80,25 @@ final class Playback: ObservableObject {
     let selfID = AccountAPI.deviceID
     let audio = MacAudio()
     private var queue: [String] = []
+    /// The queue in its own order, to go back to when shuffle is turned off.
+    private var ordered: [String] = []
+    /// Shuffle: on → the tracks after the current one are in random order (remembered between launches).
+    @Published private(set) var shuffle = UserDefaults.standard.bool(forKey: "shuffle")
+
+    private func setShuffle(_ on: Bool) {
+        shuffle = on
+        UserDefaults.standard.set(on, forKey: "shuffle")
+        guard index >= 0, index < queue.count else { return }
+        let current = queue[index]
+        if on {
+            ordered = queue
+            queue = Array(queue[...index]) + queue[(index + 1)...].shuffled()
+        } else if !ordered.isEmpty {
+            // Back to the playlist's order, carrying on from the current track.
+            queue = ordered
+            index = queue.firstIndex(of: current) ?? 0
+        }
+    }
     private var index = -1
     private var tick: AnyCancellable?
 
@@ -95,6 +116,16 @@ final class Playback: ObservableObject {
     // MARK: what the UI shows
 
     var active: DeviceState? { activeID.flatMap { devices[$0] } }
+    /// Shuffle of whichever device the controls act on.
+    var activeShuffle: Bool { (activeID == nil || activeID == selfID) ? shuffle : active?.shuffle ?? false }
+
+    /// "Shuffle" on a playlist: shuffle on, start from a random track.
+    func playShuffled(_ list: [String]) {
+        let playable = list.filter { localPath($0) != nil }
+        guard let first = playable.randomElement() else { return }
+        if !shuffle { shuffle = true; UserDefaults.standard.set(true, forKey: "shuffle") }
+        play(first, list: playable)
+    }
     /// Devices seen in the last 10 minutes (this Mac always).
     var deviceList: [DeviceState] {
         let now = Date().timeIntervalSince1970 * 1000
@@ -107,12 +138,12 @@ final class Playback: ObservableObject {
         DeviceState(id: selfID, name: Host.current().localizedName ?? "This Mac", kind: "mac",
                     trackID: index >= 0 && index < queue.count ? queue[index] : nil,
                     playing: audio.isPlaying, position: audio.position, duration: audio.duration,
-                    updatedAt: Date().timeIntervalSince1970 * 1000, queue: queue, index: index, volume: audio.volume)
+                    updatedAt: Date().timeIntervalSince1970 * 1000, queue: queue, index: index, volume: audio.volume, shuffle: shuffle)
     }
 
     // MARK: controls (for whichever device is active)
 
-    enum Action: String { case play, pause, toggle, next, previous, seek, volume }
+    enum Action: String { case play, pause, toggle, next, previous, seek, volume, shuffle }
 
     func control(_ action: Action, value: Double? = nil, on device: String? = nil) {
         let target = device ?? activeID ?? selfID
@@ -128,6 +159,7 @@ final class Playback: ObservableObject {
             case .toggle: d.position = d.livePosition; d.playing.toggle()
             case .seek: d.position = value ?? d.position
             case .volume: d.volume = value
+            case .shuffle: d.shuffle = value.map { $0 > 0 } ?? !(d.shuffle ?? false)
             default: break
             }
             d.updatedAt = Date().timeIntervalSince1970 * 1000
@@ -139,7 +171,9 @@ final class Playback: ObservableObject {
     /// Plays `id` with `list` as the queue on this Mac (double-click in a track list).
     func play(_ id: String, list: [String]) {
         let playable = list.filter { localPath($0) != nil }
-        queue = playable.contains(id) ? playable : [id] + playable
+        ordered = playable.contains(id) ? playable : [id] + playable
+        // Shuffle on: this track first, the rest in random order.
+        queue = shuffle ? [id] + ordered.filter { $0 != id }.shuffled() : ordered
         index = queue.firstIndex(of: id) ?? 0
         pauseOthers()
         load(at: index, from: 0, playing: true)
@@ -197,6 +231,7 @@ final class Playback: ObservableObject {
             if audio.position > 3 || index <= 0 { audio.seek(0) } else { return load(at: index - 1, from: 0, playing: audio.isPlaying) }
         case .seek: audio.seek(value ?? 0)
         case .volume: audio.volume = value ?? 1
+        case .shuffle: setShuffle(value.map { $0 > 0 } ?? !shuffle)
         }
         updateNowPlaying()
         reportLocal()
@@ -314,6 +349,7 @@ struct NowPlayingBar: View {
                 }
                 .frame(width: 220, alignment: .leading)
                 HStack(spacing: 6) {
+                    barButton("shuffle", playback.activeShuffle ? "Shuffle is on" : "Shuffle", lit: playback.activeShuffle) { playback.control(.shuffle) }
                     barButton("backward.fill", "Previous") { playback.control(.previous) }
                     Button { playback.control(.toggle) } label: {
                         Image(systemName: d.playing ? "pause.fill" : "play.fill").font(.system(size: 13, weight: .bold))
@@ -323,7 +359,7 @@ struct NowPlayingBar: View {
                     .buttonStyle(.plain).help(d.playing ? "Pause" : "Play")
                     barButton("forward.fill", "Next") { playback.control(.next) }
                 }
-                .frame(width: 132)
+                .frame(width: 168)
                 Text(Self.time(d.livePosition)).font(Theme.dot(11)).foregroundStyle(Theme.text3).frame(width: 40, alignment: .trailing)
                 DotProgress(progress: d.duration > 0 ? d.livePosition / d.duration : 0) { f in
                     playback.control(.seek, value: f * d.duration)
@@ -345,10 +381,10 @@ struct NowPlayingBar: View {
         }
     }
 
-    private func barButton(_ icon: String, _ help: String, _ action: @escaping () -> Void) -> some View {
+    private func barButton(_ icon: String, _ help: String, lit: Bool = false, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon).font(.system(size: 12, weight: .semibold)).frame(width: 34, height: 28)
-                .foregroundStyle(Theme.text).contentShape(Rectangle())
+                .foregroundStyle(lit ? Theme.lilac : Theme.text).contentShape(Rectangle())
         }
         .buttonStyle(.plain).help(help)
     }

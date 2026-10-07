@@ -37,7 +37,7 @@ final class PhoneSyncServer: ObservableObject {
     weak var store: LibraryStore?
 
     /// Snapshot of what the phone may download (taken on the main actor, read on the server queue).
-    private var crate: [String: (path: String, analysis: Data?)] = [:]
+    private var crate: [String: (path: String, analysis: Data?, quality: String?)] = [:]
     /// Recent events for /poll (server queue only): sequence number, name, data.
     private var events: [(seq: Int, name: String, data: Any)] = []
     private var seq = 0
@@ -128,13 +128,13 @@ final class PhoneSyncServer: ObservableObject {
         guard let store else { return }
         let enc = JSONEncoder()
         enc.dateEncodingStrategy = .iso8601
-        var c: [String: (String, Data?)] = [:]
+        var c: [String: (String, Data?, String?)] = [:]
         for t in store.library?.tracks ?? [] {
             guard let st = store.state.tracks[t.id], st.status == .downloaded, let path = st.localPath,
                   FileManager.default.fileExists(atPath: path) else { continue }
-            c[t.id] = (path, store.analysis[path].flatMap { try? enc.encode($0) })
+            c[t.id] = (path, store.analysis[path].flatMap { try? enc.encode($0) }, store.quality[path]?.label)
         }
-        let snapshot = c.mapValues { (path: $0.0, analysis: $0.1) }
+        let snapshot = c.mapValues { (path: $0.0, analysis: $0.1, quality: $0.2) }
         queue.async {
             let old = self.crate
             self.crate = snapshot
@@ -445,6 +445,7 @@ final class PhoneSyncServer: ObservableObject {
         let size = ((try? FileManager.default.attributesOfItem(atPath: v.path)[.size]) as? NSNumber)?.intValue ?? 0
         var item: [String: Any] = ["id": id, "ext": "." + (v.path as NSString).pathExtension.lowercased(), "size": size]
         if let a = v.analysis, let j = try? JSONSerialization.jsonObject(with: a) { item["analysis"] = j }
+        if let q = v.quality { item["quality"] = q }   // e.g. "FLAC", "MP3 320", "OPUS 268" — shown in the phone's lists
         return item
     }
 

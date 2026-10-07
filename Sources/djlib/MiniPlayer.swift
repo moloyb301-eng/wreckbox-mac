@@ -210,6 +210,7 @@ struct MiniPlayerView: View {
                 HStack(spacing: 6) {
                     ChromeButton(icon: "backward.fill") { playback.control(.previous) }
                     ChromeButton(icon: "stop.fill") { playback.control(.pause); playback.control(.seek, value: 0) }
+                    ChromeButton(icon: "shuffle", lit: playback.activeShuffle) { playback.control(.shuffle) }.help("Shuffle")
                     ChromeButton(icon: "forward.fill") { playback.control(.next) }
                     Spacer()
                     ChromeButton(icon: "music.note.list", width: 44, lit: controlsOpen) { withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { controlsOpen.toggle() } }

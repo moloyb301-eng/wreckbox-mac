@@ -246,6 +246,7 @@ struct FullPlayerView: View {
                     }
                     .frame(maxWidth: 760)
                     HStack(spacing: 18) {
+                        bigButton("shuffle", lit: playback.activeShuffle) { playback.control(.shuffle) }
                         bigButton("backward.fill") { playback.control(.previous) }
                         Button { playback.control(.toggle) } label: {
                             Image(systemName: d.playing ? "pause.fill" : "play.fill").font(.system(size: 22, weight: .bold))
@@ -267,10 +268,10 @@ struct FullPlayerView: View {
         }
     }
 
-    private func bigButton(_ icon: String, _ action: @escaping () -> Void) -> some View {
+    private func bigButton(_ icon: String, lit: Bool = false, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon).font(.system(size: 18, weight: .semibold)).frame(width: 54, height: 50)
-                .foregroundStyle(Theme.text).contentShape(Rectangle())
+                .foregroundStyle(lit ? Theme.lilac : Theme.text).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }

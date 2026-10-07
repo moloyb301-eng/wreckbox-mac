@@ -379,6 +379,12 @@ struct TrackListView: View {
                             .disabled(store.busy != nil)
                             .help("Write title, artists, album, year, genre, BPM, key, ISRC and cover art into every file in your crate, so Rekordbox shows the same data. In Rekordbox, select the tracks → right-click → Reload Tag.")
                     }
+                    if case .playlist(let name) = item, let pl = store.library?.playlists.first(where: { $0.name == name }) {
+                        PillButton(label: "Play", icon: "play.fill", style: .primary) {
+                            if let first = pl.trackIDs.first(where: { store.state.tracks[$0]?.status == .downloaded }) { Playback.shared.play(first, list: pl.trackIDs) }
+                        }
+                        PillButton(label: "Shuffle", icon: "shuffle") { Playback.shared.playShuffled(pl.trackIDs) }
+                    }
                     if let p = priority {
                         let rank = store.priorities.firstIndex(of: p)
                         PillButton(label: rank == 0 ? "First in queue" : rank != nil ? "#\(rank! + 1) in queue · move to top" : "Download first",
