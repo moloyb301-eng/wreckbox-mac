@@ -149,27 +149,40 @@ struct SyncCounter: View {
 /// Full YouTube page: status, switch, how it works, live log.
 struct YouTubeView: View {
     @EnvironmentObject var store: LibraryStore
+    /// "Find manually" (search / paste a link for tracks nothing found) or the automatic fill's activity.
+    @State private var manual = true
 
     var body: some View {
         let y = store.youtube
         VStack(alignment: .leading, spacing: 16) {
             PageHeader(eyebrow: "Sources", title: "YouTube",
                        subtitle: y.running ? "On — fills tracks Soulseek couldn't find, every 30 minutes" : "Off") {
-                PillButton(label: y.running ? "Turn off" : "Turn on", icon: y.running ? "stop.fill" : "play.fill", style: y.running ? .glass : .smart) {
-                    y.running ? store.stopYouTubeFill() : store.startYouTubeFill()
+                HStack(spacing: 8) {
+                    PillButton(label: "Find manually", icon: "magnifyingglass", style: manual ? .primary : .glass) { manual = true }
+                    PillButton(label: "Activity", icon: "list.bullet", style: manual ? .glass : .primary) { manual = false }
+                    PillButton(label: y.running ? "Turn off" : "Turn on", icon: y.running ? "stop.fill" : "play.fill", style: y.running ? .glass : .smart) {
+                        y.running ? store.stopYouTubeFill() : store.startYouTubeFill()
+                    }
                 }
             }
+            if manual { YouTubeFindView() } else { activity }
+        }
+        .padding(.horizontal, 22).padding(.top, 34).padding(.bottom, 10)
+    }
+
+    @ViewBuilder private var activity: some View {
+        let y = store.youtube
+        VStack(alignment: .leading, spacing: 16) {
             YouTubeTile()
             VStack(alignment: .leading, spacing: 8) {
                 DotLabel("How it works", color: Theme.text)
-                Text("Only tracks Soulseek already tried and couldn't get. Only the artist's official audio on YouTube Music — never music videos — with matching title, artist and length. Your Premium login (from Chrome) gives Opus at ~260–330 kbps, saved as FLAC so Rekordbox can read it without a second lossy encode. Without the login it waits instead of downloading in lower quality.")
+                Text("Only tracks Soulseek already tried and couldn't get. Only the artist's official audio on YouTube Music — never music videos — with matching title, artist and length. Your Premium login (from Chrome) gives Opus at ~260–330 kbps, kept as Opus (.opus) — nothing is converted. Rekordbox can't play Opus; a real FLAC from Soulseek replaces it when the weekly upgrade search finds one. Without the login it waits instead of downloading in lower quality.")
                     .font(Theme.ui(12.5)).foregroundStyle(Theme.text2).fixedSize(horizontal: false, vertical: true)
             }
             .padding(18)
             .glass(Theme.Radius.tile)
             LogPanel(lines: y.recent)
         }
-        .padding(.horizontal, 22).padding(.top, 34).padding(.bottom, 10)
     }
 }
 

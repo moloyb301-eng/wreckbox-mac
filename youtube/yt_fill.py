@@ -183,6 +183,24 @@ def score(track: dict, r: dict, tol: int) -> float | None:
     return 0.6 * t + 0.25 * dur + (0.15 if r.get("resultType") == "song" else 0)
 
 
+def manual_match(track: dict, r: dict) -> float:
+    """For the manual panel: fan uploads name the uploader, not the artist, so this rates the title words and
+    length, with the artist as a bonus. Slowed / remix / live versions the track isn't count against it."""
+    s = score(track, r, 15)
+    if s is not None:
+        return round(s, 2)
+    want, got = words(clean_title(track["title"])), words(r.get("title") or "")
+    if not want:
+        return 0.0
+    t = len(want & got) / len(want)
+    if (got & VARIANT_WORDS) - words(track["title"]):
+        t *= 0.4
+    artist = any(w in got | words(" ".join(a.get("name") or "" for a in r.get("artists") or [])) for a in track["artists"] for w in words(a))
+    d, want_d = r.get("duration_seconds"), (track.get("durationMs") or 0) / 1000
+    dur = max(0.0, 1 - abs(d - want_d) / 20) if d and want_d else 0.5
+    return round(0.55 * t + 0.3 * dur + (0.15 if artist else 0), 2)
+
+
 def find(yt: YTMusic, track: dict, cfg: dict) -> tuple[dict, float] | None:
     artist = track["artists"][0] if track["artists"] else ""
     title = clean_title(track["title"])
@@ -411,6 +429,12 @@ def main() -> None:
     g = sub.add_parser("get")
     g.add_argument("id")
     sub.add_parser("status")
+    sj = sub.add_parser("search-json")   # the app's "Find manually" panel
+    sj.add_argument("query")
+    sj.add_argument("--track")
+    gr = sub.add_parser("grab")          # download this video / link for this track
+    gr.add_argument("track")
+    gr.add_argument("link")
     a = ap.parse_args()
     setup_logging()
     cfg = config()
@@ -424,6 +448,55 @@ def main() -> None:
                 sc = score(track, r, 99)
                 print(f"{kind[:-1]:5} {'%.2f' % sc if sc is not None else ' -  '}  {r.get('title')} — "
                       f"{', '.join(x['name'] for x in r.get('artists') or [])}  ({r.get('duration')})  {r.get('videoId')}")
+        return
+    if a.cmd == "search-json":
+        library = load_json(LIBRARY_ROOT / "library.json", {"tracks": []})
+        track = next((t for t in library["tracks"] if t["id"] == a.track), None) if a.track else None
+        yt = YTMusic()
+        out = []
+        for kind in ("songs", "videos"):
+            try:
+                results = yt.search(a.query, filter=kind, limit=12)
+            except Exception as e:
+                print(json.dumps({"error": str(e)[:200]}))
+                return
+            for r in results:
+                if not r.get("videoId"):
+                    continue
+                thumbs = r.get("thumbnails") or []
+                out.append({
+                    "videoId": r["videoId"], "title": r.get("title") or "", "type": kind[:-1],
+                    "artists": ", ".join(x.get("name") or "" for x in r.get("artists") or []),
+                    "album": (r.get("album") or {}).get("name"), "duration": r.get("duration"),
+                    "seconds": r.get("duration_seconds"), "thumbnail": thumbs[-1]["url"] if thumbs else None,
+                    # How well it matches the track (title, artist, length), when the panel says which track.
+                    "match": manual_match(track, r) if track else None,
+                })
+        print(json.dumps(out))
+        return
+    if a.cmd == "grab":
+        library = load_json(LIBRARY_ROOT / "library.json", {"tracks": []})
+        track = next((t for t in library["tracks"] if t["id"] == a.track), None)
+        if not track:
+            print(json.dumps({"ok": False, "error": f"no track {a.track}"}))
+            return
+        m = re.search(r"(?:v=|youtu\.be/|/shorts/|/embed/|^)([A-Za-z0-9_-]{11})(?:[&?#/]|$)", a.link.strip())
+        if not m:
+            print(json.dumps({"ok": False, "error": "That doesn't look like a YouTube link"}))
+            return
+        try:
+            refresh_cookies(cfg)
+        except Exception:
+            pass   # standard quality without the login
+        records = load_json(RECORDS_FILE, {})
+        try:
+            got = download(m.group(1), track["fileName"], cfg)
+        except Exception as e:
+            print(json.dumps({"ok": False, "error": str(e).splitlines()[0][:200]}))
+            return
+        mark(records, track, "done", videoId=m.group(1), format=got["format"], kbps=got["kbps"], codec=got["codec"], manual=True)
+        log.info("✓ %s — %s  [%s %s kbps, picked by hand]", ", ".join(track["artists"]), track["title"], got["codec"], got["kbps"])
+        print(json.dumps({"ok": True, "codec": got["codec"], "kbps": got["kbps"]}))
         return
     if a.cmd == "status":
         recs = load_json(RECORDS_FILE, {})
