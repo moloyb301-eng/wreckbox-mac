@@ -5,8 +5,8 @@ Everything it needs is inside the app, so you don't have to install Python, Home
 
 ## 1. Download
 
-Get **WreckBox-mac-arm64.zip** from the latest release:
-https://github.com/moloyb301-eng/wreckbox-releases/releases/latest
+Get the Mac download from the WreckBox download page:
+https://wreckbox-api.moloyb301.workers.dev/download
 
 Double-click the zip and drag **WreckBox** into **Applications**.
 

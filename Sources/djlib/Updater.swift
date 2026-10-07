@@ -2,9 +2,10 @@ import AppKit
 import Foundation
 import SwiftUI
 
-// Self-update for the Mac app. A shipped app (scripts/package-mac.sh) checks the latest GitHub release of
-// moloyb301-eng/wreckbox-releases for a newer WreckBox-mac-arm64.zip and, on request, downloads it, swaps it in for
-// this app and relaunches. A developer build compares its code with GitHub (moloyb301-eng/wreckbox-mac), pulls +
+// Self-update for the Mac app. A shipped app (scripts/package-mac.sh) looks through the GitHub releases of
+// moloyb301-eng/wreckbox-releases for the newest one carrying WreckBox-mac-arm64.zip (Mac releases are tagged
+// mac-v…, made by scripts/release-mac.sh; the phone app ships separately as v…) and, on request, downloads it,
+// swaps it in for this app and relaunches. A developer build compares its code with GitHub (moloyb301-eng/wreckbox-mac), pulls +
 // rebuilds (scripts/update.sh) and relaunches. Library data is never touched.
 
 @MainActor
@@ -37,7 +38,7 @@ final class Updater: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 30 * 60, repeats: true) { [weak self] _ in Task { @MainActor in self?.check() } }
     }
 
-    static let releasesAPI = URL(string: "https://api.github.com/repos/moloyb301-eng/wreckbox-releases/releases/latest")!
+    static let releasesAPI = URL(string: "https://api.github.com/repos/moloyb301-eng/wreckbox-releases/releases?per_page=40")!
     static let assetName = "WreckBox-mac-arm64.zip"
     private var release: (version: String, zip: URL)?
 
@@ -57,14 +58,21 @@ final class Updater: ObservableObject {
             var req = URLRequest(url: Self.releasesAPI)
             req.setValue("application/vnd.github+json", forHTTPHeaderField: "accept")
             guard let (data, resp) = try? await URLSession.shared.data(for: req), (resp as? HTTPURLResponse)?.statusCode == 200,
-                  let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let tag = j["tag_name"] as? String else { return }   // offline: try later
-            let version = tag.trimmingCharacters(in: CharacterSet(charactersIn: "v"))
-            let asset = (j["assets"] as? [[String: Any]] ?? []).first { $0["name"] as? String == Self.assetName }
-            guard Self.newer(version, than: Self.installedVersion), let u = asset?["browser_download_url"] as? String, let zip = URL(string: u) else {
+                  let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return }   // offline: try later
+            // The newest release that has a Mac download ("mac-v0.6.1" or a combined "v0.6.0").
+            var best: (version: String, release: [String: Any], url: String)?
+            for r in list where r["draft"] as? Bool != true && r["prerelease"] as? Bool != true {
+                guard let tag = r["tag_name"] as? String,
+                      let a = (r["assets"] as? [[String: Any]] ?? []).first(where: { $0["name"] as? String == Self.assetName }),
+                      let u = a["browser_download_url"] as? String else { continue }
+                let v = tag.replacingOccurrences(of: "mac-", with: "").trimmingCharacters(in: CharacterSet(charactersIn: "v"))
+                if best == nil || Self.newer(v, than: best!.version) { best = (v, r, u) }
+            }
+            guard let best, Self.newer(best.version, than: Self.installedVersion), let zip = URL(string: best.url) else {
                 pending = []
                 return
             }
+            let (version, j) = (best.version, best.release)
             release = (version, zip)
             let notes = (j["body"] as? String ?? "").split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { $0.hasPrefix("- ") || $0.hasPrefix("* ") }.map { String($0.dropFirst(2)) }
