@@ -48,7 +48,7 @@ struct AppState: Codable {
 }
 
 enum SidebarItem: Hashable {
-    case home, all, missing, downloaded, ignored, files, playlist(String), genre(String), log, soundcloud, soulseek, youtube, search, queue, results, phone
+    case home, all, missing, downloaded, ignored, files, playlist(String), genre(String), log, soundcloud, soulseek, youtube, search, queue, results, phone, friends
 }
 
 /// One track's entry in _soulseek/sync.json (written by slsk-sync).
@@ -206,7 +206,7 @@ final class LibraryStore: ObservableObject {
     }
 
     func track(_ id: String) -> LibraryTrack? {
-        guard let i = trackIndex[id], let lib = library, i < lib.tracks.count else { return nil }
+        guard let i = trackIndex[id], let lib = library, i < lib.tracks.count else { return FriendShares.shared.track(id) }
         return lib.tracks[i]
     }
 

@@ -266,6 +266,11 @@ final class RemoteAccess: ObservableObject {
             try await AccountAPI.registerComputer(url: url)
             if let store { try await AccountAPI.uploadLibrary(store) }
             if let queued = try? await AccountAPI.takeQueuedRequests(), !queued.isEmpty { server?.takeQueued(queued) }
+            // Shares revoked anywhere stop working here within one heartbeat.
+            if let j = try? await AccountAPI.call("GET", "v1/shares") {
+                let revoked = (j["shares"] as? [[String: Any]] ?? []).filter { ($0["revoked"] as? Int ?? 0) != 0 }.compactMap { $0["id"] as? String }
+                PhoneSyncServer.revokedShares.formUnion(revoked)
+            }
         } catch {
             status = "Account: \(error.localizedDescription)"
             signedIn = AccountAPI.signedIn

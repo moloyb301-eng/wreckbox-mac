@@ -37,7 +37,10 @@ final class PhoneSyncServer: ObservableObject {
     weak var store: LibraryStore?
 
     /// Snapshot of what the phone may download (taken on the main actor, read on the server queue).
-    private var crate: [String: (path: String, analysis: Data?, quality: String?)] = [:]
+    private var crate: [String: (path: String, analysis: Data?, quality: String?)] = [:] {
+        didSet { guestCache = [:] }
+    }
+    private var guestCache: [String: (at: Date, json: Data, ids: Set<String>)] = [:]
     /// Recent events for /poll (server queue only): sequence number, name, data.
     private var events: [(seq: Int, name: String, data: Any)] = []
     private var seq = 0
@@ -259,7 +262,16 @@ final class PhoneSyncServer: ObservableObject {
 
     // MARK: who's asking
 
-    private enum Auth { case ok, denied, blocked }
+    private enum Auth { case ok, guest(Guest), denied, blocked }
+
+    /// A friend using a share key / link: a whole library, or one playlist. Stream and download only.
+    struct Guest { let share: String; let playlist: String? }
+
+    /// Shares the owner revoked (kept here too, so a revoked key stops at once instead of when its ticket expires).
+    static var revokedShares: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: "revokedShares") ?? []) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: "revokedShares") }
+    }
 
     private func authorize(_ req: Request, peer: String) -> Auth {
         // Through the tunnel every connection comes from cloudflared on this Mac; Cloudflare says who it really is.
@@ -271,6 +283,10 @@ final class PhoneSyncServer: ObservableObject {
         if !given.isEmpty && (Self.equal(given, token) || Self.validTicket(given)) {
             failures[who] = nil
             return .ok
+        }
+        if !given.isEmpty, let g = Self.guestTicket(given) {
+            failures[who] = nil
+            return .guest(g)
         }
         var f = failures[who] ?? (0, now, nil)
         if now.timeIntervalSince(f.since) > 60 { f = (0, now, nil) }
@@ -292,6 +308,80 @@ final class PhoneSyncServer: ObservableObject {
         guard fields.count == 3, String(fields[1]) == AccountAPI.deviceID, let exp = TimeInterval(fields[2]),
               exp > Date().timeIntervalSince1970 else { return false }
         return equal(hmacHex(key: ticketSecret, payload), String(parts[2]))
+    }
+
+    /// wbs1.<base64url "share|device|expiry|kind|playlist">.<hex HMAC> — made by the account service when a friend
+    /// opens a share key, signed with this Mac's ticket secret.
+    static func guestTicket(_ t: String) -> Guest? {
+        let parts = t.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[0] == "wbs1" else { return nil }
+        var b64 = parts[1].replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        b64 += String(repeating: "=", count: (4 - b64.count % 4) % 4)
+        guard let payloadData = Data(base64Encoded: b64), let payload = String(data: payloadData, encoding: .utf8),
+              equal(hmacHex(key: ticketSecret, payload), String(parts[2])) else { return nil }
+        let f = payload.split(separator: "|", maxSplits: 4, omittingEmptySubsequences: false).map(String.init)
+        guard f.count == 5, f[1] == AccountAPI.deviceID, let exp = TimeInterval(f[2]), exp > Date().timeIntervalSince1970,
+              !revokedShares.contains(f[0]) else { return nil }
+        return Guest(share: f[0], playlist: f[3] == "playlist" ? f[4] : nil)
+    }
+
+    /// library.json as a guest sees it: everything, or just the shared playlist and its tracks. No account ids.
+    private func guestLibrary(_ g: Guest) -> (json: Data, ids: Set<String>) {
+        let cacheKey = g.playlist ?? "\u{0}all"
+        if let hit = guestCache[cacheKey], Date().timeIntervalSince(hit.at) < 60 { return (hit.json, hit.ids) }
+        let raw = (try? Data(contentsOf: libraryRoot.appendingPathComponent("library.json"))) ?? Data()
+        var lib = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any] ?? [:]
+        lib["spotifyUser"] = ""
+        var lists = lib["playlists"] as? [[String: Any]] ?? []
+        var tracks = lib["tracks"] as? [[String: Any]] ?? []
+        if let name = g.playlist {
+            lists = lists.filter { $0["name"] as? String == name }
+            let keep = Set(lists.flatMap { $0["trackIDs"] as? [String] ?? [] })
+            tracks = tracks.filter { keep.contains($0["id"] as? String ?? "") }
+        }
+        // Only what can actually be played from here.
+        tracks = tracks.filter { crate[$0["id"] as? String ?? ""] != nil }
+        let ids = Set(tracks.compactMap { $0["id"] as? String })
+        lib["playlists"] = lists.map { p -> [String: Any] in
+            var p = p
+            p["trackIDs"] = (p["trackIDs"] as? [String] ?? []).filter(ids.contains)
+            return p
+        }
+        lib["tracks"] = tracks
+        let json = (try? JSONSerialization.data(withJSONObject: lib)) ?? Data("{}".utf8)
+        guestCache[cacheKey] = (Date(), json, ids)
+        return (json, ids)
+    }
+
+    /// What a guest may ask for: their library / playlist, its tracks' files and covers. Nothing that changes this Mac.
+    private func respondGuest(_ c: NWConnection, _ req: Request, _ g: Guest) {
+        let (json, ids) = guestLibrary(g)
+        let path = req.path
+        let deny = { self.send(c, status: "403 Forbidden", body: Data("not shared".utf8), keepAlive: req.keepAlive) }
+        switch (req.method, path) {
+        case ("GET", "/info"):
+            return sendJSON(c, ["name": "WreckBox on \(Host.current().localizedName ?? "Mac")", "tracks": ids.count, "guest": true,
+                                "playlist": g.playlist as Any, "qualities": StreamQuality.allCases.map(\.rawValue)], keepAlive: req.keepAlive)
+        case ("GET", "/library.json"):
+            return send(c, status: "200 OK", type: "application/json", body: json, keepAlive: req.keepAlive)
+        case ("GET", "/crate"):
+            return sendJSON(c, ids.compactMap { crateItem($0) }, keepAlive: req.keepAlive)
+        case ("POST", "/prepare"):
+            let j = (try? JSONSerialization.jsonObject(with: req.body)) as? [String: Any] ?? [:]
+            let q = StreamQuality(param: j["q"] as? String)
+            for id in ((j["ids"] as? [String]) ?? []).prefix(10) where ids.contains(id) {
+                guard let src = crate[id]?.path, Transcoder.needsCopy(src, q) else { continue }
+                DispatchQueue.main.async { Transcoder.shared.make(id, source: src, q, tag: self.store?.tagJob(id)) }
+            }
+            return sendJSON(c, ["ok": true], keepAlive: req.keepAlive)
+        default: break
+        }
+        if req.method == "GET", path.hasPrefix("/art/") || path.hasPrefix("/file/") {
+            let id = String(path.drop { $0 != "/" }.dropFirst().drop { $0 != "/" }.dropFirst()).removingPercentEncoding ?? ""
+            guard ids.contains(id) else { return deny() }
+            return route(c, req)
+        }
+        deny()
     }
 
     static func hmacHex(key hexKey: String, _ msg: String) -> String {
@@ -322,9 +412,15 @@ final class PhoneSyncServer: ObservableObject {
         switch authorize(req, peer: peer) {
         case .blocked: return send(c, status: "429 Too Many Requests", body: Data("too many attempts".utf8), keepAlive: false)
         case .denied: return send(c, status: "403 Forbidden", body: Data("not paired".utf8), keepAlive: req.keepAlive)
+        case .guest(let g): return respondGuest(c, req, g)
         case .ok: break
         }
         if peer.contains(DirectWiFi.subnet) { DirectWiFi.touch() }
+        route(c, req)
+    }
+
+    /// Everything a paired phone / the owner's account may do.
+    private func route(_ c: NWConnection, _ req: Request) {
         let path = req.path
         switch (req.method, path) {
         case ("GET", "/info"):

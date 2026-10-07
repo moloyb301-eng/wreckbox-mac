@@ -27,6 +27,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleShortVersionString</key><string>0.2</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>CFBundleURLTypes</key><array><dict>
+    <key>CFBundleURLName</key><string>WreckBox share link</string>
+    <key>CFBundleURLSchemes</key><array><string>wreckbox</string></array>
+  </dict></array>
   <key>NSRequiresAquaSystemAppearance</key><false/>
   <key>DJLibRepoDir</key><string>$REPO</string>
   <key>DJLibBuildCommit</key><string>$(git rev-parse HEAD 2>/dev/null)</string>

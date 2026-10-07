@@ -8,13 +8,16 @@ struct PhoneRequestedTrack: Codable {
     var artist: String
     var title: String
     var at: String
-    var via: String?       // nil = the phone; "search" = the Search page
+    var via: String?       // nil = the phone; "search" = the Search page; "friend" = downloaded from a friend
 }
 
 enum PhoneRequests {
     static let playlist = "Phone requests"
     static let searchPlaylist = "Search downloads"
-    static func playlistName(_ r: PhoneRequestedTrack) -> String { r.via == "search" ? searchPlaylist : playlist }
+    static let friendsPlaylist = "From friends"
+    static func playlistName(_ r: PhoneRequestedTrack) -> String {
+        r.via == "search" ? searchPlaylist : r.via == "friend" ? friendsPlaylist : playlist
+    }
     static var file: URL { libraryRoot.appendingPathComponent("requests.json") }
 
     static func load() -> [PhoneRequestedTrack] {
@@ -85,7 +88,8 @@ extension LibraryStore {
         enc.dateEncodingStrategy = .iso8601
         try? enc.encode(lib).write(to: libraryRoot.appendingPathComponent("library.json"), options: .atomic)
         library = lib
-        log(via == "search" ? "search" : "phone", t.id, via == "search" ? "picked in Search: \(artist) - \(title)" : "requested from the phone: \(artist) - \(title)")
+        log(via ?? "phone", t.id, via == "search" ? "picked in Search: \(artist) - \(title)"
+            : via == "friend" ? "downloaded from a friend: \(artist) - \(title)" : "requested from the phone: \(artist) - \(title)")
         return t.id
     }
 

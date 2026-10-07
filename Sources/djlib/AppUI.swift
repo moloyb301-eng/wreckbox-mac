@@ -61,6 +61,12 @@ struct DJApp: App {
                     Playback.shared.server = phoneSync
                     if UserDefaults.standard.bool(forKey: "miniOpen") { MiniPlayerWindow.shared.open(store: store) }
                 }
+                // wreckbox://share?key=WBX-… (a friend's share link): add it on the Friends page.
+                .onOpenURL { url in
+                    guard url.host == "share", let key = FriendShares.key(from: url.absoluteString) else { return }
+                    store.sidebar = .friends
+                    Task { try? await FriendShares.shared.add(key) }
+                }
                 .frame(minWidth: 980, minHeight: 620)
                 .preferredColorScheme(.dark)
         }
@@ -101,6 +107,7 @@ struct ContentView: View {
                         case .soulseek: SoulseekView()
                         case .youtube: YouTubeView()
                         case .search: SearchView()
+                        case .friends: FriendsView()
                         case .queue: QueueView()
                         case .results: SyncResultsView()
                         case .phone: PhoneSyncView()
@@ -274,6 +281,7 @@ struct Sidebar: View {
                     SideItem(item: .soulseek, title: "Soulseek", icon: "arrow.down.to.line", count: store.soulseek.done, live: store.soulseek.running)
                     SideItem(item: .youtube, title: "YouTube", icon: "play.rectangle", count: store.youtube.done, live: store.youtube.running)
                     SideItem(item: .search, title: "Search", icon: "magnifyingglass")
+                    SideItem(item: .friends, title: "Friends", icon: "person.2")
                     SideItem(item: .soundcloud, title: "SoundCloud", icon: "cloud")
 
                     section("Tools")

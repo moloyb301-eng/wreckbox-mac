@@ -170,7 +170,7 @@ final class Playback: ObservableObject {
 
     /// Plays `id` with `list` as the queue on this Mac (double-click in a track list).
     func play(_ id: String, list: [String]) {
-        let playable = list.filter { localPath($0) != nil }
+        let playable = list.filter { localPath($0) != nil || FriendShares.shared.has($0) }
         ordered = playable.contains(id) ? playable : [id] + playable
         // Shuffle on: this track first, the rest in random order.
         queue = shuffle ? [id] + ordered.filter { $0 != id }.shuffled() : ordered
@@ -199,12 +199,25 @@ final class Playback: ObservableObject {
 
     private func localPath(_ id: String) -> String? {
         guard let st = store?.state.tracks[id], st.status == .downloaded, let p = st.localPath,
-              FileManager.default.fileExists(atPath: p) else { return nil }
+              FileManager.default.fileExists(atPath: p) else { return FriendShares.shared.cachedPath(id) }
         return p
     }
 
     private func load(at i: Int, from position: Double, playing: Bool) {
-        guard i >= 0, i < queue.count, let path = localPath(queue[i]) else { error = "Not on this Mac"; return }
+        guard i >= 0, i < queue.count else { return }
+        // A friend's track: fetch it from their computer first, then play.
+        if localPath(queue[i]) == nil, FriendShares.shared.has(queue[i]) {
+            let id = queue[i]
+            index = i
+            Task {
+                if await FriendShares.shared.fetch(id) != nil, self.index == i, self.queue.indices.contains(i), self.queue[i] == id {
+                    self.load(at: i, from: position, playing: playing)
+                } else if FriendShares.shared.cachedPath(id) == nil { self.error = "Couldn't reach your friend's computer" }
+            }
+            return
+        }
+        guard let path = localPath(queue[i]) else { error = "Not on this Mac"; return }
+        if i + 1 < queue.count, FriendShares.shared.has(queue[i + 1]) { let n = queue[i + 1]; Task { _ = await FriendShares.shared.fetch(n) } }
         error = nil
         index = i
         do {
