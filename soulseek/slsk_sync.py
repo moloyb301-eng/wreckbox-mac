@@ -588,9 +588,78 @@ async def sleep_until_nudged(seconds: float) -> None:
             return
 
 
+JOBS_DIR = WORK_DIR / "jobs"
+
+
+async def serve_jobs(s: "Syncer") -> None:
+    """The app's Search page talks to this running client through files (one Soulseek login can't be shared):
+    jobs/<id>.search.json {"query"} → jobs/<id>.result.json {"results": [...]}, best quality first;
+    jobs/<id>.grab.json {"track", "user", "path", "size", "ext", "bitrate"} → the file lands in _inbox/ named for
+    that library track → jobs/<id>.result.json {"ok"}. Runs next to the normal passes."""
+    JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    busy: set[str] = set()
+
+    async def search(job: Path, jid: str) -> dict:
+        q = json.loads(job.read_text()).get("query", "").strip()
+        if not q:
+            return {"results": []}
+        results = await s.search(q)
+        out = []
+        for r in results:
+            for f in r.shared_items:
+                ext = (f.extension or f.filename.rsplit(".", 1)[-1]).lower().lstrip(".")
+                if ext not in AUDIO_EXT or f.filesize < 500_000:
+                    continue
+                attrs = {a.key: a.value for a in f.attributes}
+                bitrate = attrs.get(AttributeKey.BITRATE.value)
+                quality = quality_of(ext, bitrate, 0) or 0
+                out.append({"user": r.username, "path": f.filename, "name": f.filename.replace("\\", "/").split("/")[-1],
+                            "folder": "/".join(f.filename.replace("\\", "/").split("/")[-3:-1]), "size": f.filesize, "ext": ext,
+                            "bitrate": bitrate, "seconds": attrs.get(AttributeKey.DURATION.value), "free": r.has_free_slots,
+                            "speed": r.avg_speed, "queue": r.queue_size, "quality": quality,
+                            "lossless": quality >= 13})
+        out.sort(key=lambda x: (x["quality"], x["free"], -min(x["queue"], 50), x["speed"]), reverse=True)
+        return {"results": out[:300]}
+
+    async def grab(job: Path, jid: str) -> dict:
+        j = json.loads(job.read_text())
+        library = load_json(LIBRARY_ROOT / "library.json", {"tracks": []})
+        track = next((t for t in library["tracks"] if t["id"] == j.get("track")), None)
+        if not track:
+            return {"ok": False, "error": "no such track in the library"}
+        c = Candidate(j["user"], j["path"], j["ext"], int(j["size"]), j.get("bitrate"), None, True, 0, 0, quality_of(j["ext"], j.get("bitrate"), 0) or 0)
+        log.info("↓ %s  ←  %s (picked in the app)", track["fileName"], c.label)
+        dest = await s.download(track, c)
+        if not dest:
+            return {"ok": False, "error": "that user didn't send the file — try another result"}
+        s.mark(track, "done", file=dest.name, source=f"{c.username}:{c.path}", format=c.ext, bitrate=c.bitrate, sizeBytes=c.size, reason=None)
+        log.info("✓ %s → _inbox/%s", track["fileName"], dest.name)
+        return {"ok": True, "file": dest.name}
+
+    async def run(job: Path):
+        jid, kind = job.name.split(".")[0], job.name.split(".")[1]
+        try:
+            res = await (search(job, jid) if kind == "search" else grab(job, jid))
+        except Exception as e:
+            res = {"ok": False, "error": str(e)[:200]}
+        tmp = JOBS_DIR / f"{jid}.result.tmp"
+        tmp.write_text(json.dumps(res))
+        tmp.replace(JOBS_DIR / f"{jid}.result.json")
+        job.unlink(missing_ok=True)
+        busy.discard(job.name)
+
+    while True:
+        for job in sorted(JOBS_DIR.glob("*.search.json")) + sorted(JOBS_DIR.glob("*.grab.json")):
+            if job.name not in busy:
+                busy.add(job.name)
+                asyncio.create_task(run(job))
+        await asyncio.sleep(1)
+
+
 async def cmd_run(cfg: dict, once: bool, limit: int | None) -> None:
     s = Syncer(cfg)
     await s.connect()
+    jobs = asyncio.create_task(serve_jobs(s)) if not once else None
     try:
         while True:
             await s.run_pass(limit)

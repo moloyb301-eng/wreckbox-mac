@@ -8,10 +8,13 @@ struct PhoneRequestedTrack: Codable {
     var artist: String
     var title: String
     var at: String
+    var via: String?       // nil = the phone; "search" = the Search page
 }
 
 enum PhoneRequests {
     static let playlist = "Phone requests"
+    static let searchPlaylist = "Search downloads"
+    static func playlistName(_ r: PhoneRequestedTrack) -> String { r.via == "search" ? searchPlaylist : playlist }
     static var file: URL { libraryRoot.appendingPathComponent("requests.json") }
 
     static func load() -> [PhoneRequestedTrack] {
@@ -24,7 +27,7 @@ enum PhoneRequests {
 
     static func track(_ r: PhoneRequestedTrack) -> LibraryTrack {
         LibraryTrack(id: id(artist: r.artist, title: r.title), artists: [r.artist], title: r.title, album: nil, year: nil,
-                     isrc: nil, spotifyIDs: [], durationMs: nil, playlists: [playlist], firstAdded: r.at,
+                     isrc: nil, spotifyIDs: [], durationMs: nil, playlists: [playlistName(r)], firstAdded: r.at,
                      fileName: safeFileName("\(r.artist) - \(r.title)"), localPath: nil, status: "missing", artworkURL: nil)
     }
 
@@ -32,15 +35,17 @@ enum PhoneRequests {
     static func merge(into tracks: inout [LibraryTrack], playlists: inout [LibraryPlaylist]) {
         let reqs = load()
         guard !reqs.isEmpty else { return }
-        var ids: [String] = []
+        var ids: [String: [String]] = [:]
         let have = Set(tracks.map(\.id))
         for r in reqs {
             let t = track(r)
             if !have.contains(t.id) { tracks.append(t) }
-            if !ids.contains(t.id) { ids.append(t.id) }
+            if !(ids[playlistName(r)] ?? []).contains(t.id) { ids[playlistName(r), default: []].append(t.id) }
         }
-        playlists.removeAll { $0.name == playlist }
-        playlists.append(LibraryPlaylist(name: playlist, spotifyID: nil, collaborative: false, trackIDs: ids))
+        for name in [playlist, searchPlaylist] {
+            playlists.removeAll { $0.name == name }
+            if let list = ids[name] { playlists.append(LibraryPlaylist(name: name, spotifyID: nil, collaborative: false, trackIDs: list)) }
+        }
     }
 }
 
@@ -60,8 +65,8 @@ extension LibraryStore {
         return tid
     }
 
-    private func addRequestedTrack(artist: String, title: String) -> String {
-        let r = PhoneRequestedTrack(artist: artist, title: title, at: ISO8601DateFormatter().string(from: Date()))
+    func addRequestedTrack(artist: String, title: String, via: String? = nil) -> String {
+        let r = PhoneRequestedTrack(artist: artist, title: title, at: ISO8601DateFormatter().string(from: Date()), via: via)
         let t = PhoneRequests.track(r)
         if track(t.id) != nil { return t.id }
         var reqs = PhoneRequests.load()
@@ -69,17 +74,18 @@ extension LibraryStore {
         if let d = try? JSONEncoder().encode(reqs) { try? d.write(to: PhoneRequests.file, options: .atomic) }
         guard var lib = library else { return t.id }
         lib.tracks.append(t)
-        if let i = lib.playlists.firstIndex(where: { $0.name == PhoneRequests.playlist }) {
+        let name = PhoneRequests.playlistName(r)
+        if let i = lib.playlists.firstIndex(where: { $0.name == name }) {
             lib.playlists[i].trackIDs.append(t.id)
         } else {
-            lib.playlists.append(LibraryPlaylist(name: PhoneRequests.playlist, spotifyID: nil, collaborative: false, trackIDs: [t.id]))
+            lib.playlists.append(LibraryPlaylist(name: name, spotifyID: nil, collaborative: false, trackIDs: [t.id]))
         }
         let enc = JSONEncoder()
         enc.outputFormatting = [.prettyPrinted, .sortedKeys]
         enc.dateEncodingStrategy = .iso8601
         try? enc.encode(lib).write(to: libraryRoot.appendingPathComponent("library.json"), options: .atomic)
         library = lib
-        log("phone", t.id, "requested from the phone: \(artist) - \(title)")
+        log(via == "search" ? "search" : "phone", t.id, via == "search" ? "picked in Search: \(artist) - \(title)" : "requested from the phone: \(artist) - \(title)")
         return t.id
     }
 

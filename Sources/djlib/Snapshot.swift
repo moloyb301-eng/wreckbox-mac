@@ -19,7 +19,7 @@ enum Snapshot {
         let screens: [(String, SidebarItem, String?)] = [
             ("narrow-all-tracks", .all, firstWithFile), ("results", .results, nil),
             ("home", .home, nil), ("all-tracks", .all, firstWithFile), ("playlist", .playlist(store.library?.playlists.first?.name ?? ""), nil),
-            ("soulseek", .soulseek, nil), ("youtube", .youtube, nil), ("files", .files, nil), ("queue", .queue, nil),
+            ("soulseek", .soulseek, nil), ("youtube", .youtube, nil), ("search", .search, nil), ("files", .files, nil), ("queue", .queue, nil),
         ]
         for (name, item, focus) in screens {
             store.sidebar = item
@@ -47,6 +47,7 @@ enum Snapshot {
                 ("player-matrix", AnyView(MatrixVisualizer(levels: levels).frame(width: 980, height: 420))),
                 ("player-halo", AnyView(HaloVisualizer(levels: levels, row: row).frame(width: 600, height: 600))),
                 ("player-eq", AnyView(EQPanel().padding(16).frame(width: 440))),
+                ("add-playlist", AnyView(AddPlaylistSheet())),
                 ("mini-player", AnyView(MiniPlayerView(previewDrawers: true).frame(width: MiniPlayerWindow.width, height: MiniPlayerWindow.body + MiniPlayerWindow.controlsHeight + MiniPlayerWindow.eqHeight - 2 * MiniPlayerWindow.tuck + 8).background(Color(red: 0.25, green: 0.3, blue: 0.4)))),
                 ("player-bar", AnyView(VStack {
                     Spacer()

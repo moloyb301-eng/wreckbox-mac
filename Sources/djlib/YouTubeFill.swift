@@ -110,7 +110,7 @@ struct YouTubeTile: View {
                 DotLabel("YouTube", color: Theme.text)
                 Spacer()
                 PillButton(label: y.running ? "Turn off" : "Turn on", icon: y.running ? "stop.fill" : "play.fill", style: y.running ? .glass : .smart) {
-                    y.running ? store.stopYouTubeFill() : store.startYouTubeFill()
+                    y.running ? store.stopYouTubeFill() : DownloadGate.then { store.startYouTubeFill() }
                 }
                 .help("Get tracks Soulseek can't find from YouTube Music — official audio only, in your Premium quality")
             }
@@ -161,7 +161,7 @@ struct YouTubeView: View {
                     PillButton(label: "Find manually", icon: "magnifyingglass", style: manual ? .primary : .glass) { manual = true }
                     PillButton(label: "Activity", icon: "list.bullet", style: manual ? .glass : .primary) { manual = false }
                     PillButton(label: y.running ? "Turn off" : "Turn on", icon: y.running ? "stop.fill" : "play.fill", style: y.running ? .glass : .smart) {
-                        y.running ? store.stopYouTubeFill() : store.startYouTubeFill()
+                        y.running ? store.stopYouTubeFill() : DownloadGate.then { store.startYouTubeFill() }
                     }
                 }
             }

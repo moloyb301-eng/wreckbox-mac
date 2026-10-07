@@ -46,7 +46,7 @@ struct DJApp: App {
                 .environmentObject(remote)
                 .onAppear { browser.store = store; phoneSync.attach(store); store.startInboxWatcher(); store.refreshSoulseek(); updater.start(); remote.server = phoneSync; remote.store = store; remote.resume()
                     PlaylistSync.installAgent()
-                    if store.youtubeFillEnabled { store.startYouTubeFill() }
+                    if store.youtubeFillEnabled { DownloadGate.then { store.startYouTubeFill() } }
                     Task {
                         await store.analyseMissing()      // and anything still without BPM / key / energy
                     }
@@ -100,6 +100,7 @@ struct ContentView: View {
                         case .soundcloud: SoundCloudView()
                         case .soulseek: SoulseekView()
                         case .youtube: YouTubeView()
+                        case .search: SearchView()
                         case .queue: QueueView()
                         case .results: SyncResultsView()
                         case .phone: PhoneSyncView()
@@ -182,6 +183,7 @@ struct PageHeader<Trailing: View>: View {
 /// Rescan / reload actions plus the busy indicator, shared by list pages.
 struct LibraryActions: View {
     @EnvironmentObject var store: LibraryStore
+    @State private var addPlaylist = false
     var body: some View {
         HStack(spacing: 8) {
             if let b = store.busy {
@@ -192,6 +194,9 @@ struct LibraryActions: View {
                 .padding(.horizontal, 12).padding(.vertical, 7)
                 .background(Capsule().fill(Theme.glassFill))
             }
+            PillButton(label: "Add playlist", icon: "plus") { addPlaylist = true }
+                .help("Add a playlist from a Spotify / YouTube / YouTube Music link, or import your YouTube Music")
+                .sheet(isPresented: $addPlaylist) { AddPlaylistSheet().environmentObject(store) }
             PillButton(label: "Sync playlists", icon: "arrow.triangle.2.circlepath") { Task { await store.syncPlaylists() } }
                 .disabled(store.busy != nil)
                 .help("Bring in tracks you added to your Spotify playlists (also runs every morning at 7:00)")
@@ -211,6 +216,7 @@ struct LibraryActions: View {
 struct Sidebar: View {
     @EnvironmentObject var store: LibraryStore
     @State private var showGenres = false
+    @State private var addPlaylist = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -231,7 +237,18 @@ struct Sidebar: View {
                     SideItem(item: .ignored, title: "Ignored", icon: "nosign", count: store.count(.ignored))
                     SideItem(item: .files, title: "Files on this Mac", icon: "internaldrive", count: store.analysis.count)
 
-                    section("Playlists")
+                    // "+" right-aligned with the count column (SideItem's 10 pt inner padding)
+                    HStack(spacing: 0) {
+                        DotLabel("Playlists")
+                        Spacer()
+                        Button { addPlaylist = true } label: {
+                            Image(systemName: "plus").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.text3)
+                                .frame(width: 18, height: 18).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain).help("Add a playlist from a Spotify / YouTube link, or import your YouTube Music")
+                    }
+                    .padding(.leading, 12).padding(.trailing, 10).padding(.top, 18).padding(.bottom, 6)
+                    .sheet(isPresented: $addPlaylist) { AddPlaylistSheet().environmentObject(store) }
                     ForEach(store.library?.playlists ?? [], id: \.name) { p in
                         SideItem(item: .playlist(p.name), title: p.name, icon: p.collaborative ? "person.2" : "music.note",
                                  count: p.trackIDs.count,
@@ -256,6 +273,7 @@ struct Sidebar: View {
                     section("Sources")
                     SideItem(item: .soulseek, title: "Soulseek", icon: "arrow.down.to.line", count: store.soulseek.done, live: store.soulseek.running)
                     SideItem(item: .youtube, title: "YouTube", icon: "play.rectangle", count: store.youtube.done, live: store.youtube.running)
+                    SideItem(item: .search, title: "Search", icon: "magnifyingglass")
                     SideItem(item: .soundcloud, title: "SoundCloud", icon: "cloud")
 
                     section("Tools")
@@ -627,7 +645,7 @@ struct TrackMenu: View {
         }
         Button("Bulk download from SoundCloud (\(ids.count))") {
             store.sidebar = .soundcloud
-            Task { await browser.bulkDownload(Array(ids)) }
+            DownloadGate.then { Task { await browser.bulkDownload(Array(ids)) } }
         }
         .disabled(browser.bulkRunning)
         if ids.count == 1, let id = ids.first, let r = store.row(id) {

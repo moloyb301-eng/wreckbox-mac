@@ -68,7 +68,8 @@ final class YouTubeFinder: ObservableObject {
     }
 
     /// Downloads `link` (a video id or any YouTube / YouTube Music link) as `track`; the inbox import files it.
-    func grab(_ link: String, for track: String, store: LibraryStore) async {
+    func grab(_ link: String, for track: String, store: LibraryStore, checked: Bool = false) async {
+        if !checked { guard await DownloadGate.allow() else { return } }
         jobs[track] = "downloading"
         let data = await run(["grab", track, link])
         let j = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]

@@ -363,6 +363,54 @@ def run_pass(cfg: dict, limit: int | None) -> int:
     return ok
 
 
+def signed_in_ytmusic(cfg: dict):
+    """YTMusic with your browser login (from cookies.txt), for private playlists and Liked songs; None if signed out."""
+    try:
+        refresh_cookies(cfg)
+    except Exception:
+        pass
+    import http.cookiejar
+    if not COOKIE_FILE.exists():
+        return None
+    jar = http.cookiejar.MozillaCookieJar(str(COOKIE_FILE))
+    try:
+        jar.load(ignore_discard=True, ignore_expires=True)
+    except Exception:
+        return None
+    # YouTube's own cookies first; the Google account ones (SAPISID etc. live on .google.com too) fill the gaps.
+    cookies = {c.name: c.value for c in jar if c.domain.endswith("google.com")}
+    cookies.update({c.name: c.value for c in jar if c.domain.endswith("youtube.com")})
+    if "SAPISID" not in cookies and "__Secure-3PAPISID" not in cookies:
+        return None
+    header = "; ".join(f"{k}={v}" for k, v in cookies.items())
+    try:
+        from ytmusicapi.helpers import get_authorization
+        sapisid = cookies.get("__Secure-3PAPISID") or cookies.get("SAPISID")
+        origin = "https://music.youtube.com"
+        # A browser login is recognised by its SAPISIDHASH header (ytmusicapi refreshes it for each request).
+        return YTMusic(auth={"cookie": header, "x-goog-authuser": "0", "origin": origin,
+                             "authorization": get_authorization(sapisid + " " + origin)})
+    except Exception:
+        return None
+
+
+def playlist_tracks(yt, pid: str, name: str | None = None) -> dict:
+    """{"id", "name", "tracks": [{title, artists, album, seconds, videoId, thumbnail}]} for a playlist."""
+    client = yt or YTMusic()
+    pl = client.get_playlist(pid, limit=None)
+    tracks = []
+    for t in pl.get("tracks") or []:
+        if not t.get("videoId") or not t.get("title"):
+            continue
+        thumbs = t.get("thumbnails") or []
+        tracks.append({
+            "title": t["title"], "artists": [a.get("name") for a in t.get("artists") or [] if a.get("name")],
+            "album": (t.get("album") or {}).get("name"), "seconds": t.get("duration_seconds"),
+            "videoId": t["videoId"], "thumbnail": thumbs[-1]["url"] if thumbs else None,
+        })
+    return {"id": pid, "name": name or pl.get("title") or "YouTube playlist", "tracks": tracks}
+
+
 def in_inbox(stem: str) -> bool:
     return any(p.stem == stem for p in INBOX.glob("*") if p.is_file())
 
@@ -455,6 +503,9 @@ def main() -> None:
     sj = sub.add_parser("search-json")   # the app's "Find manually" panel
     sj.add_argument("query")
     sj.add_argument("--track")
+    pj = sub.add_parser("playlist-json")  # a YouTube / YouTube Music playlist's tracks, for "Add playlist from a link"
+    pj.add_argument("playlist")
+    sub.add_parser("library-json")         # your own YouTube Music playlists + Liked songs (needs your login)
     gr = sub.add_parser("grab")          # download this video / link for this track
     gr.add_argument("track")
     gr.add_argument("link")
@@ -496,6 +547,28 @@ def main() -> None:
                     "match": manual_match(track, r) if track else None,
                 })
         print(json.dumps(out))
+        return
+    if a.cmd in ("playlist-json", "library-json"):
+        yt = signed_in_ytmusic(cfg)
+        try:
+            if a.cmd == "playlist-json":
+                m = re.search(r"list=([A-Za-z0-9_-]+)", a.playlist)
+                pid = m.group(1) if m else a.playlist.strip()
+                print(json.dumps(playlist_tracks(yt, pid)))
+            else:
+                if yt is None:
+                    print(json.dumps({"error": "Sign in to YouTube in your browser first (WreckBox reads that login)."}))
+                    return
+                out = [playlist_tracks(yt, "LM", name="YouTube Music Liked")]
+                for pl in yt.get_library_playlists(limit=None) or []:
+                    if pl.get("playlistId") and pl["playlistId"] != "LM":
+                        try:
+                            out.append(playlist_tracks(yt, pl["playlistId"]))
+                        except Exception as e:
+                            log.info("  couldn't read %s: %s", pl.get("title"), e)
+                print(json.dumps(out))
+        except Exception as e:
+            print(json.dumps({"error": str(e).splitlines()[0][:200]}))
         return
     if a.cmd == "grab":
         library = load_json(LIBRARY_ROOT / "library.json", {"tracks": []})

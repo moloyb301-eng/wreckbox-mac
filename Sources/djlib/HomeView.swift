@@ -170,7 +170,7 @@ struct SoulseekTile: View {
     @ViewBuilder private func button(_ s: SoulseekStatus) -> some View {
         if s.configured {
             PillButton(label: s.running ? "Stop" : "Start sync", icon: s.running ? "stop.fill" : "play.fill", style: s.running ? .glass : .smart) {
-                s.running ? store.stopSoulseek() : store.startSoulseek()
+                s.running ? store.stopSoulseek() : DownloadGate.then { store.startSoulseek() }
             }
         } else {
             PillButton(label: "Set up", icon: "gearshape") { store.sidebar = .soulseek }
@@ -217,7 +217,7 @@ struct SoulseekView: View {
                        subtitle: s.running ? "Running — checks your playlists again every 30 minutes" : "Stopped") {
                 if s.configured {
                     PillButton(label: s.running ? "Stop" : "Start sync", icon: s.running ? "stop.fill" : "play.fill", style: s.running ? .glass : .smart) {
-                        s.running ? store.stopSoulseek() : store.startSoulseek()
+                        s.running ? store.stopSoulseek() : DownloadGate.then { store.startSoulseek() }
                     }
                 }
             }

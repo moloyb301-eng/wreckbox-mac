@@ -31,6 +31,14 @@ do {
     case "inventory": try await runInventory(paths: Array(args.dropFirst()))
     case "snapshot": await Snapshot.run(args: Array(args.dropFirst()))
     case "play-test": await MacAudio.selfTest(Array(args.dropFirst()))
+    case "link-test":   // reads a playlist link without saving it (dev check)
+        for l in args.dropFirst() {
+            guard let (kind, id) = LinkedPlaylists.parse(l) else { print("not a playlist link: \(l)"); continue }
+            do {
+                let got = kind == "spotify" ? try await LinkedPlaylists.fetchSpotify(id) : try await LinkedPlaylists.fetchYouTube(id)
+                print("\(kind) \(id): \(got.name) — \(got.tracks.count) tracks; first: \(got.tracks.first.map { "\($0.artists.joined(separator: ", ")) – \($0.name)" } ?? "-")")
+            } catch { print("\(kind) \(id): \(error)") }
+        }
     case "layout-check": await LayoutCheck.run(args: Array(args.dropFirst()))
     case "make-icon": await IconMaker.run(args: Array(args.dropFirst()))
     case "phone-serve":   // developer test: serve the crate to phones for N seconds (no window)

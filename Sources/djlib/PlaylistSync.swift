@@ -15,8 +15,14 @@ enum PlaylistSync {
 
     /// Spotify → spotify.json → library.json. Heavy; call off the main thread.
     static func run() async throws {
-        try await SpotifyImport.run(args: [])
+        // Spotify (when connected), then the playlists added from links; a Spotify failure doesn't stop the rest.
+        var spotifyError: Error?
+        if SpotifyImport.loadConfig() != nil {
+            do { try await SpotifyImport.run(args: []) } catch { spotifyError = error }
+        }
+        await LinkedPlaylists.refreshAll()
         try buildLibrary()
+        if let spotifyError { throw spotifyError }
         try ISO8601DateFormatter().string(from: Date()).write(to: stampFile, atomically: true, encoding: .utf8)
     }
 

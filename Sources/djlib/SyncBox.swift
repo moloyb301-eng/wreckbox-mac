@@ -59,7 +59,7 @@ struct SyncPanel: View {
                 counts: "\(s.done) got · \(s.notFound) not found · \(s.failed) failed", live: s.running) {
                 if s.configured {
                     PillButton(label: s.running ? "Stop" : "Start", icon: s.running ? "stop.fill" : "play.fill") {
-                        s.running ? store.stopSoulseek() : store.startSoulseek()
+                        s.running ? store.stopSoulseek() : DownloadGate.then { store.startSoulseek() }
                     }
                 }
             }
@@ -67,7 +67,7 @@ struct SyncPanel: View {
             row(icon: "play.rectangle", name: "YouTube", status: YouTubeTile.statusLine(y),
                 counts: "\(y.done) got · \(y.notFound) not on YouTube · \(y.failed) failed", live: y.running) {
                 PillButton(label: y.running ? "Turn off" : "Turn on", icon: y.running ? "stop.fill" : "play.fill") {
-                    y.running ? store.stopYouTubeFill() : store.startYouTubeFill()
+                    y.running ? store.stopYouTubeFill() : DownloadGate.then { store.startYouTubeFill() }
                 }
             }
         }

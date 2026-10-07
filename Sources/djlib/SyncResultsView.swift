@@ -21,11 +21,11 @@ struct SyncResultsView: View {
                 HStack(spacing: 8) {
                     if tab != .done && !items.isEmpty {
                         PillButton(label: "Retry all \(items.count)", icon: "arrow.clockwise", style: .smart) {
-                            store.retrySync(items.map(\.row.id))
+                            DownloadGate.then { store.retrySync(items.map(\.row.id)) }
                         }
                     }
                     if s.configured && !s.running {
-                        PillButton(label: "Start sync", icon: "play.fill") { store.startSoulseek() }
+                        PillButton(label: "Start sync", icon: "play.fill") { DownloadGate.then { store.startSoulseek() } }
                     }
                 }
             }
@@ -61,7 +61,7 @@ struct SyncResultsView: View {
         }
         .padding(.horizontal, 22).padding(.top, 34).padding(.bottom, 10)
         .sheet(item: Binding(get: { customFor.map(IdentifiedRow.init) }, set: { customFor = $0?.row })) { r in
-            CustomSearchSheet(row: r.row) { q in store.retrySync([r.row.id], query: q); customFor = nil } cancel: { customFor = nil }
+            CustomSearchSheet(row: r.row) { q in DownloadGate.then { store.retrySync([r.row.id], query: q) }; customFor = nil } cancel: { customFor = nil }
         }
     }
 
@@ -163,9 +163,9 @@ struct ResultRow: View {
 
     private var actions: some View {
         HStack(spacing: 6) {
-            RoundButton(icon: "arrow.clockwise", help: "Retry on the next pass") { store.retrySync([row.id]) }
+            RoundButton(icon: "arrow.clockwise", help: "Retry on the next pass") { DownloadGate.then { store.retrySync([row.id]) } }
             RoundButton(icon: "text.magnifyingglass", help: "Retry with your own search words", action: customSearch)
-            RoundButton(icon: "play.rectangle", help: "Get it from YouTube Music now (official audio)") { store.requestYouTube([row.id]) }
+            RoundButton(icon: "play.rectangle", help: "Get it from YouTube Music now (official audio)") { DownloadGate.then { store.requestYouTube([row.id]) } }
             Menu {
                 Section("Try another source") {
                     Button("SoundCloud") { findOnSoundCloud(store: store, browser: browser, id: row.id) }

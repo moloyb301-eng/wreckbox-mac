@@ -40,10 +40,12 @@ func buildLibrary() throws {
     let src = SpotifyImport.exportDir.appendingPathComponent("spotify.json")
     let dec = JSONDecoder()
     dec.dateDecodingStrategy = .iso8601
-    let export = try dec.decode(SpotifyExport.self, from: Data(contentsOf: src))
+    // No Spotify connected (e.g. a friend who only uses YouTube): an empty export; linked playlists still build.
+    let export = (try? dec.decode(SpotifyExport.self, from: Data(contentsOf: src)))
+        ?? SpotifyExport(user: "", exportedAt: Date(), likedSongs: [], playlists: [])
 
     // Personal sources only: Liked Songs + playlists you own or collaborate on that were readable.
-    var sources: [(name: String, id: String?, collab: Bool, tracks: [SpotifyTrack])] = [("Liked Songs", nil, false, export.likedSongs)]
+    var sources: [(name: String, id: String?, collab: Bool, tracks: [SpotifyTrack])] = export.likedSongs.isEmpty ? [] : [("Liked Songs", nil, false, export.likedSongs)]
     var seenNames: [String: Int] = ["Liked Songs": 1]
     for p in export.playlists where p.skippedReason == nil && (p.ownedByMe || p.collaborative) {
         var name = p.name.trimmingCharacters(in: .whitespaces)
@@ -51,6 +53,15 @@ func buildLibrary() throws {
         seenNames[name, default: 0] += 1
         if seenNames[name]! > 1 { name += " (\(seenNames[name]!))" }
         sources.append((name, p.id, p.collaborative, p.tracks))
+    }
+
+    // Playlists added from a link (LinkedPlaylists.swift)
+    for lp in LinkedPlaylists.load() {
+        var name = lp.name.trimmingCharacters(in: .whitespaces)
+        if name.isEmpty { name = "Playlist" }
+        seenNames[name, default: 0] += 1
+        if seenNames[name]! > 1 { name += " (\(seenNames[name]!))" }
+        sources.append((name, lp.kind == "spotify" ? lp.id : nil, false, lp.tracks))
     }
 
     var tracks: [LibraryTrack] = []
