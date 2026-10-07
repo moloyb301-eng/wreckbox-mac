@@ -13,7 +13,7 @@ struct HomeView: View {
             VStack(alignment: .leading, spacing: 28) {
                 PageHeader(eyebrow: Date().formatted(.dateTime.weekday(.wide).day().month(.wide)),
                            title: "Your crate",
-                           subtitle: "\(total) tracks from \(store.library?.playlists.count ?? 0) Spotify playlists") {
+                           subtitle: "\(total) tracks from \(store.library?.playlists.count ?? 0) playlist\(store.library?.playlists.count == 1 ? "" : "s")") {
                     LibraryActions()
                 }
 
@@ -32,6 +32,8 @@ struct HomeView: View {
                     YouTubeTile().frame(maxWidth: .infinity)
                 }
                 .fixedSize(horizontal: false, vertical: true)
+
+                if total == 0 { GettingStarted() }
 
                 section("Recently added", action: ("See all", { store.sidebar = .all })) {
                     Scroller(axis: .horizontal, indicators: false) {
@@ -269,5 +271,29 @@ struct SoulseekLogin: View {
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         pass = ""
         store.refreshSoulseek()
+    }
+}
+
+/// Home on a new Mac: how to get the first tracks in.
+struct GettingStarted: View {
+    @EnvironmentObject var store: LibraryStore
+    @State private var adding = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            DotLabel("Get started", color: Theme.text)
+            Text("Add a playlist from a Spotify, YouTube or YouTube Music link — WreckBox finds every track, in the best quality it can (Soulseek FLAC first, then YouTube).")
+                .font(Theme.ui(13.5)).foregroundStyle(Theme.text2).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                PillButton(label: "Add playlist", icon: "plus", style: .primary) { adding = true }
+                PillButton(label: "Set up logins", icon: "person.crop.circle") { NotificationCenter.default.post(name: .showSetup, object: nil) }
+                PillButton(label: "Search", icon: "magnifyingglass") { store.sidebar = .search }
+                PillButton(label: "Friends' music", icon: "person.2") { store.sidebar = .friends }
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .smartGlass(Theme.Radius.tile)
+        .sheet(isPresented: $adding) { AddPlaylistSheet().environmentObject(store) }
     }
 }

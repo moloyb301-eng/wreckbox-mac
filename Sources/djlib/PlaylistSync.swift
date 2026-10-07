@@ -23,6 +23,7 @@ enum PlaylistSync {
         await LinkedPlaylists.refreshAll()
         try buildLibrary()
         if let spotifyError { throw spotifyError }
+        try? FileManager.default.createDirectory(at: stampFile.deletingLastPathComponent(), withIntermediateDirectories: true)
         try ISO8601DateFormatter().string(from: Date()).write(to: stampFile, atomically: true, encoding: .utf8)
     }
 
@@ -41,6 +42,7 @@ enum PlaylistSync {
     /// Installs (or updates) the 07:00 launchd job that runs `djlib sync-playlists` with this app's binary.
     static func installAgent() {
         guard let exe = Bundle.main.executableURL?.path, exe.contains(".app/") else { return }   // only from the app
+        guard ProcessInfo.processInfo.environment["WRECKBOX_HOME"] == nil else { return }   // a test copy leaves the real one alone
         let log = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/WreckBox-playlists.log").path
         let plist: [String: Any] = [
             "Label": agentLabel,

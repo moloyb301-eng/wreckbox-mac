@@ -29,7 +29,9 @@ struct TrackRecord: Codable {
 // MARK: - Config
 
 let audioExtensions: Set<String> = ["mp3", "wav", "aif", "aiff", "flac", "m4a", "alac", "aac", "ogg", "opus"]
-let home = FileManager.default.homeDirectoryForCurrentUser
+/// The user's home; WRECKBOX_HOME points a test copy at an empty home (as on a friend's new Mac).
+let home = ProcessInfo.processInfo.environment["WRECKBOX_HOME"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+    ?? FileManager.default.homeDirectoryForCurrentUser
 let skipNames: Set<String> = ["Logic Pro Library.bundle", "Logic", "GarageBand", "Audio Music Apps"]
 
 let outDir = home.appendingPathComponent("Music/DJ Library/_inventory")

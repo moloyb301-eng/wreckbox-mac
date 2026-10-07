@@ -38,7 +38,7 @@ enum AppPaths {
         bundled ? appSupport.appendingPathComponent("soulseek.toml") : repo.appendingPathComponent("soulseek/config.toml")
     }
     static var appSupport: URL {
-        let d = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("WreckBox")
+        let d = home.appendingPathComponent("Library/Application Support/WreckBox")
         try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
         return d
     }
@@ -57,6 +57,7 @@ enum AppPaths {
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = toolPATH
         env["WRECKBOX_SLSK_CONFIG"] = slskConfig.path
+        env["WRECKBOX_ROOT"] = libraryRoot.path
         env["PYTHONDONTWRITEBYTECODE"] = "1"   // the app bundle stays as it was signed
         return env
     }

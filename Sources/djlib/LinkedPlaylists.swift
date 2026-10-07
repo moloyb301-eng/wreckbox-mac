@@ -158,7 +158,8 @@ extension LibraryStore {
         do {
             try await Task.detached(priority: .userInitiated) { try buildLibrary() }.value
             reloadLibrary()
-            startSoulseek()
+            // New tracks to fetch: start Soulseek (after the VPN reminder) if it's set up and not running.
+            if soulseek.configured && !soulseek.running { DownloadGate.then { self.startSoulseek() } }
         } catch {
             log("playlists", nil, "couldn't rebuild the library: \(error.localizedDescription)")
         }

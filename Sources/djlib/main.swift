@@ -39,6 +39,21 @@ do {
                 print("\(kind) \(id): \(got.name) — \(got.tracks.count) tracks; first: \(got.tracks.first.map { "\($0.artists.joined(separator: ", ")) – \($0.name)" } ?? "-")")
             } catch { print("\(kind) \(id): \(error)") }
         }
+    case "friend-test":   // opens a friend's share key, lists it and fetches its first track (dev check)
+        let f = await FriendShares.shared
+        do {
+            try await f.add(args.dropFirst().first ?? "")
+            let s = await f.shares[0]
+            let list = await f.tracks[s.id] ?? []
+            print("\(s.title) from \(s.owner): \(list.count) tracks; status \(await f.status[s.id] ?? "ok")")
+            if let t = list.first {
+                let path = await f.fetch(t.id)
+                let size = path.flatMap { try? FileManager.default.attributesOfItem(atPath: $0)[.size] as? Int } ?? 0
+                let job = await f.jobs[t.id] ?? ""
+                print("fetched \(t.track.title): \(path ?? "failed — \(job)") (\(size) bytes)")
+            }
+            await f.remove(s.id)
+        } catch { print("friend-test: \(error.localizedDescription)") }
     case "layout-check": await LayoutCheck.run(args: Array(args.dropFirst()))
     case "make-icon": await IconMaker.run(args: Array(args.dropFirst()))
     case "phone-serve":   // developer test: serve the crate to phones for N seconds (no window)

@@ -41,8 +41,11 @@ done
 )
 
 # The app itself, then everything it needs inside it.
+# (A copy in build/ship, so the developer's own build/WreckBox.app keeps working from the repo.)
 VERSION="$VERSION" scripts/make-app.sh release
-APP=build/WreckBox.app
+rm -rf build/ship && mkdir -p build/ship
+ditto build/WreckBox.app build/ship/WreckBox.app
+APP=build/ship/WreckBox.app
 RES="$APP/Contents/Resources"
 /usr/libexec/PlistBuddy -c "Delete :DJLibRepoDir" "$APP/Contents/Info.plist"   # shipped: no repo to build from
 
@@ -97,4 +100,5 @@ codesign --force -s - "$APP"
 mkdir -p dist
 rm -f dist/WreckBox-mac-arm64.zip
 ditto -c -k --sequesterRsrc --keepParent "$APP" dist/WreckBox-mac-arm64.zip
+scripts/make-app.sh release >/dev/null   # put the developer build back as it was
 echo "Built dist/WreckBox-mac-arm64.zip ($(du -h dist/WreckBox-mac-arm64.zip | cut -f1)) — WreckBox $VERSION"
