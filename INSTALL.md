@@ -31,6 +31,9 @@ A setup window opens on first launch. You can come back to it any time from **Wr
   1. Open https://developer.spotify.com/dashboard, log in with your Spotify account and click **Create app**.
   2. Give it any name. Set the Redirect URI to `http://127.0.0.1:8888/callback`, tick **Web API**, then **Save**.
   3. Copy the **Client ID** into WreckBox and click **Connect**.
+
+  Nobody else's Spotify is used, so this only ever sees your own playlists. Spotify only runs developer apps for
+  **Premium** accounts. Without Premium, add playlists from YouTube / YouTube Music links instead.
 - **Soulseek:** enter your Soulseek username and password. If you don't have an account, pick a new name and one is created the first time you sign in.
 - **YouTube:** sign in to YouTube in your browser (Chrome, Brave, Edge, Firefox or Safari) and pick that browser.
   The first time, macOS asks to let WreckBox use "Chrome Safe Storage" (or your browser's). Enter your Mac password and choose
