@@ -678,7 +678,10 @@ struct PhoneSyncView: View {
     @EnvironmentObject var store: LibraryStore
     @EnvironmentObject var server: PhoneSyncServer
     @EnvironmentObject var remote: RemoteAccess
+    @ObservedObject private var playback = Playback.shared
     @State private var copied = false
+    @State private var sentTo: String?
+    @Environment(\.snapshotMode) private var snapshotMode
     /// One-time sign-in code in the QR code while this Mac is signed in (renewed before it runs out).
     @State private var linkCode: String?
     private let renew = Timer.publish(every: 480, on: .main, in: .common).autoconnect()
@@ -751,6 +754,7 @@ struct PhoneSyncView: View {
             }
             .padding(22)
             .glass(Theme.Radius.card)
+            if server.running || snapshotMode { sendLibraryCard }
             AccountPanel().frame(maxWidth: 640, alignment: .leading)
             Spacer()
         }
@@ -758,5 +762,39 @@ struct PhoneSyncView: View {
         .onReceive(store.$state) { _ in if server.running { server.refreshCrate() } }
         .onReceive(renew) { _ in refreshLink() }
         .onReceive(remote.$signedIn) { refreshLink(signedIn: $0) }   // also fires when the page opens
+    }
+
+    /// Starts the phone's "Everything on your computer" copy from here, over a Wi-Fi Direct link: the phone hosts it
+    /// and this Mac joins (its internet pauses until the copy is done). The phone needs WreckBox open.
+    private var sendLibraryCard: some View {
+        let phones = playback.deviceList.filter { $0.kind == "phone" }
+        return VStack(alignment: .leading, spacing: 10) {
+            Text("Send library to phone").font(Theme.ui(18, .semibold))
+            Text("Copies every track the phone doesn't have yet over a direct Wi-Fi link — the fastest way, no router needed. "
+                 + "Open WreckBox on the phone first. This Mac's internet pauses until the copy is done.")
+                .font(Theme.ui(12.5)).foregroundStyle(Theme.text2).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                if phones.isEmpty {
+                    sendButton(to: nil, label: "Send to my phone")
+                } else {
+                    ForEach(phones, id: \.id) { sendButton(to: $0.id, label: "Send to \($0.name)") }
+                }
+            }
+            if let sentTo {
+                Text("Asked \(sentTo) — the phone shows the progress and can stop it.").font(Theme.ui(12)).foregroundStyle(Theme.lilac)
+            }
+        }
+        .padding(22)
+        .frame(maxWidth: 640, alignment: .leading)
+        .glass(Theme.Radius.card)
+    }
+
+    private func sendButton(to id: String?, label: String) -> some View {
+        PillButton(label: label, icon: "iphone.and.arrow.forward", style: .smart) {
+            var data: [String: Any] = ["direct": true]
+            if let id { data["to"] = id }
+            server.publish("copy-all", data)
+            sentTo = id.flatMap { id in playback.deviceList.first { $0.id == id }?.name } ?? "your phone"
+        }
     }
 }

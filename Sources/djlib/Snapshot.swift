@@ -20,6 +20,7 @@ enum Snapshot {
             ("narrow-all-tracks", .all, firstWithFile), ("results", .results, nil),
             ("home", .home, nil), ("all-tracks", .all, firstWithFile), ("playlist", .playlist(store.library?.playlists.first?.name ?? ""), nil),
             ("soulseek", .soulseek, nil), ("youtube", .youtube, nil), ("search", .search, nil), ("friends", .friends, nil), ("files", .files, nil), ("queue", .queue, nil),
+            ("phone-sync", .phone, nil),
         ]
         for (name, item, focus) in screens {
             store.sidebar = item
