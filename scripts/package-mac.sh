@@ -3,7 +3,8 @@
 # dist/WreckBox-mac-arm64.zip. Nothing else needs installing — inside the app:
 #   Resources/runtime/python   standalone CPython 3.11 (python-build-standalone) with every helper's packages
 #   Resources/helpers/…        the Soulseek / YouTube / analysis helpers (same layout as the repo)
-#   Resources/bin              ffmpeg, ffprobe (martin-riedl.de static builds, GPL) and deno (yt-dlp's YouTube solver)
+#   Resources/bin              ffmpeg, ffprobe (martin-riedl.de static builds, GPL), deno (yt-dlp's YouTube solver) and
+#                              fpcalc (Chromaprint, LGPL — fingerprints for Identify)
 # No logins, tokens or settings of the person building it go in: Soulseek, Spotify and YouTube logins are each
 # user's own, saved in their ~/Library/Application Support. Ad-hoc signed (no Apple Developer account), so the
 # first launch needs right-click → Open / System Settings → Privacy & Security → Open Anyway (see INSTALL.md).
@@ -18,6 +19,8 @@ PY_TAG=20261003
 PY_FILE="cpython-3.11.17+$PY_TAG-aarch64-apple-darwin-install_only.tar.gz"
 DENO_VERSION=v2.9.7
 FFMPEG_BUILD=1789931890_9.0.2
+FPCALC_VERSION=1.6.1
+FPCALC_SHA256=254f23cb2d290069ba1d3d28199414fbf66d2054fc2f6821c2fc62ed39470a95   # GitHub's digest for the release asset
 VENDOR=build/vendor
 mkdir -p "$VENDOR"
 
@@ -28,6 +31,7 @@ fetch "https://github.com/astral-sh/python-build-standalone/releases/download/$P
 fetch "https://github.com/astral-sh/python-build-standalone/releases/download/$PY_TAG/SHA256SUMS" "python-SHA256SUMS-$PY_TAG"
 fetch "https://github.com/denoland/deno/releases/download/$DENO_VERSION/deno-aarch64-apple-darwin.zip" "deno-$DENO_VERSION.zip"
 fetch "https://github.com/denoland/deno/releases/download/$DENO_VERSION/deno-aarch64-apple-darwin.zip.sha256sum" "deno-$DENO_VERSION.zip.sha256sum"
+fetch "https://github.com/acoustid/chromaprint/releases/download/v$FPCALC_VERSION/chromaprint-fpcalc-$FPCALC_VERSION-macos-arm64.tar.gz" "fpcalc-$FPCALC_VERSION.tar.gz"
 for t in ffmpeg ffprobe; do
   fetch "https://ffmpeg.martin-riedl.de/download/macos/arm64/$FFMPEG_BUILD/$t.zip" "$t-$FFMPEG_BUILD.zip"
   fetch "https://ffmpeg.martin-riedl.de/download/macos/arm64/$FFMPEG_BUILD/$t.zip.sha256" "$t-$FFMPEG_BUILD.zip.sha256"
@@ -38,6 +42,7 @@ done
   grep " $PY_FILE\$" "python-SHA256SUMS-$PY_TAG" | sed "s| $PY_FILE\$| $PY_FILE|" | shasum -a 256 -c -
   echo "$(awk '{print $1}' "deno-$DENO_VERSION.zip.sha256sum")  deno-$DENO_VERSION.zip" | shasum -a 256 -c -
   for t in ffmpeg ffprobe; do echo "$(awk '{print $1}' "$t-$FFMPEG_BUILD.zip.sha256")  $t-$FFMPEG_BUILD.zip" | shasum -a 256 -c -; done
+  echo "$FPCALC_SHA256  fpcalc-$FPCALC_VERSION.tar.gz" | shasum -a 256 -c -
 )
 
 # The app itself, then everything it needs inside it.
@@ -82,6 +87,7 @@ chmod +x "$RES/helpers/soulseek/slsk-sync" "$RES/helpers/youtube/yt-fill" "$RES/
 
 unzip -oq "$VENDOR/deno-$DENO_VERSION.zip" -d "$RES/bin"
 for t in ffmpeg ffprobe; do unzip -oq "$VENDOR/$t-$FFMPEG_BUILD.zip" -d "$RES/bin"; done
+tar xzf "$VENDOR/fpcalc-$FPCALC_VERSION.tar.gz" -C "$RES/bin" --strip-components 1 "chromaprint-fpcalc-$FPCALC_VERSION-macos-arm64/fpcalc"
 chmod +x "$RES/bin/"*
 cp scripts/THIRD-PARTY.txt "$RES/"
 
@@ -96,6 +102,7 @@ codesign --force -s - "$APP"
 "$PY" -c "import aioslsk, pydantic, aiohttp, yt_dlp, ytmusicapi, mutagen; print('helpers ok')"
 "$RES/bin/ffmpeg" -hide_banner -version | head -1
 "$RES/bin/deno" --version | head -1
+"$RES/bin/fpcalc" -version
 
 mkdir -p dist
 rm -f dist/WreckBox-mac-arm64.zip

@@ -116,6 +116,7 @@ struct ContentView: View {
                         case .queue: QueueView()
                         case .results: SyncResultsView()
                         case .phone: PhoneSyncView()
+                        case .scan: ScanView()
                         case .log: LogView()
                         case .files: FilesView()
                         default: TrackListView(item: store.sidebar)
@@ -148,7 +149,7 @@ struct ContentView: View {
 
     private var showsInspector: Bool {
         switch store.sidebar {
-        case .soundcloud, .soulseek, .log, .phone: return false
+        case .soundcloud, .soulseek, .log, .phone, .scan: return false
         default: return true
         }
     }
@@ -294,6 +295,7 @@ struct Sidebar: View {
                     section("Tools")
                     SideItem(item: .queue, title: "Download queue", icon: "list.number", count: store.priorities.isEmpty ? nil : store.priorities.count)
                     SideItem(item: .phone, title: "Sync to phone", icon: "iphone.radiowaves.left.and.right")
+                    SideItem(item: .scan, title: "Scan & identify", icon: "waveform.badge.magnifyingglass")
                     SideItem(item: .results, title: "Sync results", icon: "checklist",
                              count: store.soulseek.notFound + store.soulseek.failed == 0 ? nil : store.soulseek.notFound + store.soulseek.failed)
                     SideItem(item: .log, title: "Activity", icon: "clock.arrow.circlepath")

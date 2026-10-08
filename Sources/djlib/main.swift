@@ -39,6 +39,42 @@ do {
                 print("\(kind) \(id): \(got.name) — \(got.tracks.count) tracks; first: \(got.tracks.first.map { "\($0.artists.joined(separator: ", ")) – \($0.name)" } ?? "-")")
             } catch { print("\(kind) \(id): \(error)") }
         }
+    case "scan-test":   // what Scan this Mac would find, grouped by folder; moves nothing (dev check)
+        let urls = LibraryScanner.findOutside()
+        var byGroup: [String: Int] = [:]
+        for u in urls { byGroup[LibraryScanner.group(of: u), default: 0] += 1 }
+        print("\(urls.count) audio files outside WreckBox (before the 45 s / match filter)")
+        for (g, n) in byGroup.sorted(by: { $0.value > $1.value }) { print("  \(n)\t\(g)") }
+    case "scan-move-test":   // Scan + move everything, then Identify Tracks/Found — only on a test home (WRECKBOX_HOME)
+        guard ProcessInfo.processInfo.environment["WRECKBOX_HOME"] != nil else { print("set WRECKBOX_HOME to a test home"); break }
+        await MainActor.run {
+            let store = LibraryStore(), sc = LibraryScanner.shared
+            Task { @MainActor in
+                sc.scan(store)
+                while sc.phase == .scanning { try? await Task.sleep(for: .milliseconds(200)) }
+                for g in sc.groups { print("found \(g.finds.count) in \(g.name) (\(g.matched) matched)") }
+                sc.picked = Set(sc.groups.map(\.name))
+                sc.move(store)
+                while sc.phase == .moving { try? await Task.sleep(for: .milliseconds(200)) }
+                print(sc.line)
+                let id = Identifier.shared
+                id.run(store)
+                while id.running { try? await Task.sleep(for: .milliseconds(200)) }
+                for e in id.suggestions { print("suggest \(Int(e.score * 100))% \(e.name) (was \(e.was))") }
+                if let e = id.suggestions.first { await id.accept(e, store); print("accepted → \(id.entries.values.first { $0.status == .accepted }?.path ?? "?")") }
+                exit(0)
+            }
+        }
+        try? await Task.sleep(for: .seconds(600))
+    case "identify-test":   // fingerprints files and looks them up; changes nothing (dev check)
+        for path in args.dropFirst() {
+            guard let fp = Identifier.fingerprint(path) else { print("\(path): no fingerprint (fpcalc: \(Identifier.fpcalc ?? "missing"))"); continue }
+            print("\(path): \(fp.duration) s, fingerprint \(fp.fp.prefix(24))…")
+            do {
+                let e = try await Identifier.identify(path)
+                print("  \(e.status) \(Int(e.score * 100))% \(e.name) | \(e.album ?? "-") | \(e.year ?? "-") | \(e.genre ?? "-") | ISRC \(e.isrc ?? "-")")
+            } catch { print("  lookup: \(error)") }
+        }
     case "friend-test":   // opens a friend's share key, lists it and fetches its first track (dev check)
         let f = await FriendShares.shared
         do {
